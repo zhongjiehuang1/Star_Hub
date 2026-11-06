@@ -1,0 +1,44 @@
+{
+  "openai": {
+    "website": "https://platform.openai.com/",
+    "keyUrl": "https://platform.openai.com/api-keys",
+    "docsUrl": "https://developers.openai.com/api/docs/",
+    "note": "使用 OpenAI API 账户的密钥与额度。"
+  },
+  "anthropic": {
+    "website": "https://platform.claude.com/",
+    "keyUrl": "https://platform.claude.com/settings/keys",
+    "docsUrl": "https://platform.claude.com/docs/en/api/overview",
+    "note": "使用 Claude Console 的 API Key。"
+  },
+  "gemini": {
+    "website": "https://aistudio.google.com/",
+    "keyUrl": "https://aistudio.google.com/apikey",
+    "docsUrl": "https://ai.google.dev/gemini-api/docs/api-key",
+    "note": "使用 Google AI Studio 的 Gemini API Key。"
+  },
+  "deepseek": {
+    "website": "https://platform.deepseek.com/",
+    "keyUrl": "https://platform.deepseek.com/api_keys",
+    "docsUrl": "https://api-docs.deepseek.com/zh-cn/",
+    "note": "使用 DeepSeek 开放平台的 API Key。"
+  },
+  "qwen": {
+    "website": "https://bailian.console.aliyun.com/",
+    "keyUrl": "https://bailian.console.aliyun.com/",
+    "docsUrl": "https://help.aliyun.com/zh/model-studio/get-api-key/",
+    "note": "在百炼控制台进入密钥管理；本站使用中国内地（北京）接入地址，Key 与地域需匹配。"
+  },
+  "moonshot": {
+    "website": "https://platform.moonshot.cn/",
+    "keyUrl": "https://platform.moonshot.cn/console/api-keys",
+    "docsUrl": "https://platform.moonshot.cn/docs/guide/start-using-kimi-api",
+    "note": "本站使用 Moonshot 中国区平台地址。"
+  },
+  "xai": {
+    "website": "https://console.x.ai/",
+    "keyUrl": "https://console.x.ai/",
+    "docsUrl": "https://docs.x.ai/developers/quickstart",
+    "note": "在 xAI Console 中选择团队，再进入 API Keys。"
+  }
+}

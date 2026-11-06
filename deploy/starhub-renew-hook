@@ -1,0 +1,4 @@
+#!/bin/sh
+case " $RENEWED_DOMAINS " in
+  *" starhub.zhongjiehuang.com "*) /usr/sbin/nginx -t && /bin/systemctl reload nginx ;;
+esac
