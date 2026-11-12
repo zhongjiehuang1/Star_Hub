@@ -1,0 +1,126 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="theme-color" content="#f8f9fc"><meta name="description" content="Star Hub: a simple workspace for conversations with different AI models.">
+  <title>Star Hub · One space. More possibilities.</title>
+  <link rel="icon" href="icon.svg" type="image/svg+xml"><link rel="stylesheet" href="app.css?v=20261108-storage">
+  <script src="vendor/marked.min.js" defer></script><script src="vendor/purify.min.js" defer></script><script src="markdown.js?v=20261104" defer></script>
+  <script src="provider-media.js?v=20261112" defer></script><script src="storage.js?v=20261112" defer></script><script src="i18n-data.js?v=20261108-storage" defer></script><script src="i18n.js?v=20261028-easy" defer></script>
+  <script src="provider-operations.js?v=20261112" defer></script><script src="app.js?v=20261112" defer></script><script src="account.js?v=20261112" defer></script><script src="chat-pages.js?v=20261111" defer></script><script src="cloud.js?v=2d1f13917ae9" defer></script><script src="replies.js?v=20261104-workspace" defer></script><script src="api-links.js?v=20261104-search2" defer></script><script src="parameters.js?v=20261028-easy" defer></script><script src="advanced.js?v=20261028-easy" defer></script>
+  <script src="source-viewer.js?v=20261028-easy" defer></script>
+  <script src="experience.js?v=20261105-guestsession" defer></script><script src="cookie-settings.js?v=20261105" defer></script>
+</head>
+<body>
+  <aside class="sidebar" id="sidebar">
+    <a class="brand" href="./" aria-label="Star Hub home"><span class="brand-mark">✳</span><span>Star Hub<small>Your multi-model workspace</small></span></a>
+    <button class="new-chat" id="newChat"><span>＋</span> New chat <kbd>⌘ K</kbd></button>
+    <button id="browseModels" class="catalog-launch" disabled>▦ Browse models <span id="catalogCount">Loading</span></button>
+    <div class="connection-compact"><span id="connectionSummary">Choose your model</span><button id="connectProvider" type="button">Connect a provider</button></div>
+    <details id="connectionSettings"><summary>Connection settings <span id="connectionState">Not connected</span></summary>
+    <div class="settings">
+      <label for="provider">Official provider</label><select id="provider" disabled><option>Loading providers…</option></select>
+      <label for="modelSearch">Find a model</label><input id="modelSearch" type="search" placeholder="Name, manufacturer or model ID">
+      <label for="model">Choose a model</label><select id="model" disabled><option value="">Choose a provider first</option></select>
+      <p id="selectedSummary" class="field-help"></p><button id="modelSettings" type="button" class="settings-button" hidden>Model settings <span id="parameterStatus">Provider default</span></button><button id="modelDetails" class="text-button" type="button">Model details &amp; pricing ↗</button>
+      <div class="task-row"><div><label for="task">Task type</label><select id="task"></select></div><div><label for="effort">Reasoning effort</label><select id="effort"><option value="default">Provider default</option></select></div></div>
+      <p id="effortHelp" class="field-help"></p>
+      <label for="apiKey"><span id="keyLabel">API Key</span> <span class="mini-label" id="keyScope">Temporary session</span></label>
+      <div class="key-field"><input id="apiKey" type="password" maxlength="4096" autocomplete="off" spellcheck="false" placeholder="Enter this provider&#x27;s API key"><button type="button" id="toggleKey" aria-label="Show API key" aria-pressed="false">Show</button></div>
+      <button id="accountSaveKey" type="button" class="settings-button" hidden>Manage API keys</button><p id="accountKeyStatus" class="field-help" role="status"></p><p id="guestKeyHelp" class="field-help">Keys are encrypted for session recovery. Access ends with this tab or session; encrypted server copies remain until maintenance. Each provider needs its own key.</p>
+    </div>
+    </details>
+    <section id="currentApi" class="current-api" aria-label="Current API endpoint"><span class="section-label">Actual API endpoint</span><a id="currentApiUrl" target="_blank" rel="noopener noreferrer"></a><a id="currentKeyUrl" target="_blank" rel="noopener noreferrer"></a><button id="browseApis" type="button" class="text-button" disabled>API addresses &amp; keys ↗</button><button id="viewCallSource" type="button" class="text-button">View request source &lt;/&gt;</button></section>
+    <button type="button" id="openLibrary" class="settings-button" hidden>File library</button>
+    <nav id="history" class="history" aria-label="Conversation list"></nav>
+    <div id="deletedNotice" class="deleted-notice" role="status" hidden><span>Conversation deleted</span><button id="undoDelete" type="button">Undo</button></div>
+    <div class="sidebar-footer"><span class="privacy-icon">◇</span><div><span id="privacyHeading">Guest session</span><small id="privacyDetail">Sign in to save chats and files to your account</small><small><span>IP geolocation by </span><a href="https://db-ip.com" target="_blank" rel="noopener noreferrer" data-no-i18n>DB-IP</a></small><button id="cookieSettings" class="cookie-settings-link" type="button">Cookie settings</button></div></div>
+  </aside>
+  <main><div id="clusterUnavailable" class="cluster-unavailable" role="status" hidden>服务器故障，请等待恢复</div>
+    <header class="topbar"><div class="header-left"><button id="menuToggle" class="icon-button mobile-only" aria-label="Open connection settings" aria-expanded="false">☰</button><span class="workspace-title">Workspace</span><span class="divider"></span><span id="activeProvider" class="provider-badge">Star Hub</span><span id="serverBadge" class="server-badge" hidden></span></div><div class="header-right"><label class="language-control"><span class="sr-only">Interface language</span><select id="language" aria-label="Interface language" data-no-i18n><option value="en">English</option><option value="zh">中文</option></select></label><button type="button" id="accountButton" class="text-button">Sign in</button><button type="button" id="accountLogout" class="text-button" hidden>Sign out</button><span class="service-status" id="serviceStatus"><i></i> Connecting</span><button class="text-button" id="exportChat" title="Export current conversation">Export chat ↗</button></div></header>
+    <div class="conversation" id="conversation">
+      <section class="welcome" id="welcome">
+        <div class="eyebrow"><span></span> ONE SPACE. MORE POSSIBILITIES.</div>
+        <div class="hero-symbol" aria-hidden="true">✳<span class="orbit-dot"></span></div>
+        <h1>Bring your ideas<br><span>to </span><span>new possibilities.</span></h1>
+        <p class="official-notice">Official model APIs only</p><p class="hero-description">Start with a question. Choose your model.<br>Think, create and make sense of complex ideas.</p>
+        <div class="provider-strip"><span>OpenAI</span><span>Claude</span><span>Gemini</span><span>DeepSeek</span><span>+ more</span></div>
+        <div class="prompt-grid">
+          <button class="prompt-card" data-prompt="Help me turn a rough idea into an actionable plan. Start by asking me three key questions."><span class="card-icon lavender">✦</span><strong>Explore an idea <span>↗</span></strong><small>Turn inspiration into a next step</small></button>
+          <button class="prompt-card" data-prompt="Help me make a piece of writing clearer and more natural. Ask me for the original text and its intended use first."><span class="card-icon peach">✎</span><strong>Write together <span>↗</span></strong><small>Find clarity in your own voice</small></button>
+          <button class="prompt-card" data-prompt="I want to learn a new concept. Ask what I want to understand, then explain it step by step with simple examples."><span class="card-icon mint">⌘</span><strong>Understand a topic <span>↗</span></strong><small>Break down complexity</small></button>
+        </div>
+      </section>
+      <section class="messages" id="messages" aria-label="Chat messages" aria-live="polite"></section>
+    </div>
+    <div class="composer-area"><div id="error" class="error" role="alert" hidden></div><div id="busyStatus" class="busy-status" role="status" hidden>Waiting for the model…</div>
+      <div id="taskControls" class="task-controls" hidden>
+        <p id="taskHelp"></p><div id="generationOptions" class="generation-options"></div>
+        <label id="fileLabel" hidden>Reference file (up to 4 MB)<input id="inputFile" type="file" accept="image/png,image/jpeg,image/webp"></label>
+        <label id="documentsLabel" hidden>Documents to rank, one per line<textarea id="documents" rows="3" maxlength="100000"></textarea></label>
+        <label id="questionLabel" hidden>Yes/no question<input id="question" maxlength="4000" placeholder="For example: Does this feedback describe a software defect?"></label>
+      </div>
+      <section id="batchPanel" class="advanced-panel" hidden aria-labelledby="batchTitle">
+        <div class="panel-title"><h2 id="batchTitle">Batch jobs</h2><span id="batchModel"></span></div>
+        <p>Enter one task per line, up to 100. Jobs run asynchronously on the provider. Closing this page does not cancel them; avoid duplicate submissions.</p>
+        <label for="batchInputs">Tasks</label><textarea id="batchInputs" rows="4" maxlength="100000" placeholder="First task…&#10;Second task…"></textarea>
+        <div class="panel-actions"><button id="submitBatch" type="button">Submit batch</button><button id="loadBatches" type="button">Load provider jobs</button><button id="moreBatches" type="button" hidden>Load older jobs</button></div>
+        <div class="batch-recovery"><input id="batchJobId" aria-label="Batch job ID" placeholder="Paste a job ID to resume checking progress"><button id="recoverBatch" type="button">Find job</button></div>
+        <div id="batchNotice" role="status"></div><div id="batchJobs" class="batch-jobs"></div>
+      </section>
+      <section id="realtimePanel" class="advanced-panel" hidden aria-labelledby="realtimeTitle">
+        <div class="panel-title"><h2 id="realtimeTitle">Live voice</h2><span id="realtimeState" role="status">Disconnected</span></div>
+        <p id="realtimeHelp">After connecting, click Start speaking, then Send recording when finished. Audio uploads live to your selected provider.</p>
+        <div class="panel-actions"><button id="connectRealtime" type="button">Connect live model</button><button id="recordRealtime" type="button" disabled>Start speaking</button><button id="interruptRealtime" type="button" disabled>Interrupt reply</button><button id="endRealtime" type="button" disabled>End connection</button></div>
+        <p id="realtimeNotice" role="status"></p>
+      </section>
+      <form id="chatForm" class="composer"><div id="searchControls" class="search-controls"><label><input id="webSearch" type="checkbox" checked> <span data-no-i18n id="searchLabel">Web search (OpenAI supported models)</span></label><small data-no-i18n id="searchHelp">The model may search when needed. Searches can incur extra charges.</small></div><textarea id="prompt" rows="2" maxlength="30000" placeholder="What would you like to explore?" aria-label="Enter a message" required></textarea><div class="composer-bottom"><span id="modelHint">Connect a model to get started</span><div><span class="keyboard-hint">Enter to send · Shift + Enter for a new line</span><button type="submit" id="send" aria-label="Send message" disabled>↑</button></div></div></form>
+      <p class="disclaimer">AI can make mistakes. Verify important information. API usage is billed by your selected provider to your account.</p>
+    </div>
+  <section id="providerPendingOperations" role="region" aria-label="Unconfirmed requests" hidden></section></main>
+<dialog id="modelLibrary" aria-labelledby="libraryTitle">
+    <div class="library-header"><div><span class="eyebrow">MODEL ATLAS</span><h2 id="libraryTitle">Find your model</h2><p id="libraryStats"></p></div><button id="closeLibrary" class="icon-button" aria-label="Close model library">×</button></div>
+    <div class="library-layout"><aside class="library-filters">
+      <label for="librarySearch">Search</label><input id="librarySearch" type="search" placeholder="Model, manufacturer, use case…">
+      <label for="filterVendor">Model manufacturer</label><select id="filterVendor"></select>
+      <label for="filterCategory">Capability</label><select id="filterCategory"></select>
+      <label for="filterSpecialty">Use cases</label><select id="filterSpecialty"></select>
+      <label for="filterInput">Input types</label><select id="filterInput"></select>
+      <label for="filterFamily">Model family</label><select id="filterFamily"></select>
+      <label for="filterProvider">Official provider</label><select id="filterProvider"></select>
+      <label for="filterReasoning">Reasoning capability / effort</label><select id="filterReasoning"><option value="">All reasoning types</option><option value="adjustable">Adjustable effort</option><option value="reasoning">Reasoning supported</option><option value="none">No published reasoning levels</option></select>
+      <label for="filterExecution">Workspace support</label><select id="filterExecution"><option value="">All integrations</option><option value="integrated">Basic requests available here</option><option value="batch">Asynchronous batch</option><option value="realtime">Live voice / transcription</option></select>
+      <label for="filterCost">Pricing &amp; keys</label><select id="filterCost"><option value="">All pricing types</option><option value="free-key">Free model · key required</option><option value="keyless">Free · no key needed</option><option value="paid">Pay as you go · key required</option><option value="account">Account dependent / free quota</option></select>
+      <button id="resetFilters" class="text-button">Reset filters</button>
+      <p id="keylessNotice" class="catalog-notice"></p><p class="catalog-notice">Free quotas, rate limits and regional access are set by the provider. A catalog entry does not guarantee access for your account.</p>
+    </aside><section class="library-content"><div class="library-results"><span id="resultCount" role="status"></span><span>Official APIs only; batch integrations listed separately</span></div><div id="modelCards" class="model-cards"></div><div class="pagination"><button id="prevPage">← Previous</button><span id="pageInfo"></span><button id="nextPage">Next →</button></div></section></div>
+    <footer class="library-footer" id="coverageNotice"></footer>
+  </dialog>
+  <dialog id="detailDialog" aria-labelledby="detailTitle"><div class="detail-header"><h2 id="detailTitle"></h2><button id="closeDetails" class="icon-button" aria-label="Close model details">×</button></div><div id="detailContent"></div><button id="useDetailModel" class="new-chat">Use this model →</button></dialog>
+<dialog id="parameterDialog" aria-labelledby="parameterTitle">
+    <div class="detail-header"><div><h2 id="parameterTitle">Model settings</h2><p id="parameterModel"></p></div><button id="closeParameters" class="icon-button" aria-label="Close model settings">×</button></div>
+    <p class="parameter-intro">Only reviewed settings supported by this model are shown. Leave blank for provider defaults. Switching models or tasks resets settings; changing reasoning effort hides and excludes incompatible settings.</p>
+    <div id="parameterFields" class="parameter-grid"></div><p id="parameterError" role="alert"></p>
+    <div class="parameter-footer"><div id="parameterSources"></div><button id="resetParameters" type="button">Reset to provider defaults</button><button id="applyParameters" type="button">Done</button></div>
+  </dialog>
+<dialog id="apiDialog" aria-labelledby="apiTitle"><div class="detail-header"><div><span class="eyebrow">API DIRECTORY</span><h2 id="apiTitle">API addresses &amp; keys</h2></div><button id="closeApis" class="icon-button" aria-label="Close API directory">×</button></div><p class="api-explanation">These are the actual endpoints used by Star Hub. Only manufacturer-owned APIs are called; use the matching provider's key. POST endpoints may show an error when opened as a web page. Send requests from this workspace.</p><div id="apiCurrent"></div><h3 class="api-directory-title">All official providers</h3><p class="field-help">Expand a provider to view full addresses, key management and official documentation.</p><div id="apiDirectory"></div></dialog>
+<dialog id="sourceDialog" aria-labelledby="sourceTitle">
+    <div class="detail-header"><div><span class="eyebrow">CALL SOURCE</span><h2 id="sourceTitle">Request source code</h2></div><button id="closeSource" type="button" class="icon-button" aria-label="Close source viewer">×</button></div>
+    <p class="api-explanation">This is the actual source bundled with the deployed website. Requests go from your browser to Star Hub's Java service, then directly to the manufacturer's official API. Keys are used for request authentication and are not included in the source shown below.</p>
+    <div id="sourceRoute" class="source-route"></div>
+    <div class="source-toolbar"><label for="sourceFile">Source file</label><select id="sourceFile" disabled></select><button id="copySource" type="button" disabled>Copy source</button><button id="reloadSource" type="button">Reload</button></div>
+    <p id="sourceStatus" role="status"></p><p id="sourceHash" class="source-hash"></p>
+    <pre id="sourceCode" class="source-code" tabindex="0" aria-label="Read-only request source code"><code id="sourceText"></code></pre>
+  </dialog>
+<dialog id="setupDialog" aria-labelledby="setupTitle">
+  <div class="detail-header"><div><span class="eyebrow">GET CONNECTED</span><h2 id="setupTitle">Connect your first model</h2></div><button id="closeSetup" class="icon-button" type="button" aria-label="Close connection guide">×</button></div>
+  <label class="setup-language" for="setupLanguage">Interface language <select id="setupLanguage" data-no-i18n><option value="en">English</option><option value="zh">中文</option></select></label>
+  <ol class="setup-steps"><li id="setupStep1">1 Choose provider</li><li id="setupStep2">2 Add key</li><li id="setupStep3">3 Check connection</li></ol>
+  <section id="setupChoose"><p>Use the manufacturer's official API. Usage is billed to your official account.</p><label for="setupProvider">Official provider</label><select id="setupProvider"></select><p id="setupProviderNote" class="field-help"></p></section>
+  <section id="setupKeyStep" hidden><p id="setupKeyHelp">Create an API key in the official console and paste it below. It stays in this tab through refreshes and is cleared when the tab closes.</p><a id="setupKeyLink" target="_blank" rel="noopener noreferrer">Open official key management ↗</a><p id="setupKeyAddress" class="field-help"></p><label for="setupKey">API Key</label><div class="key-field"><input id="setupKey" type="password" maxlength="4096" autocomplete="off" spellcheck="false" placeholder="Paste your full official API key"><button id="setupToggleKey" type="button" aria-label="Show API key">Show</button></div></section>
+  <section id="setupCheckStep" hidden><p>This check only reads the official model list. It sends no chat or generation task. Passing means the API accepted the key; access to a specific model is confirmed when you use it.</p><p id="setupCheckAddress" class="field-help" data-no-i18n></p><p id="setupModel" class="setup-model"></p><p id="setupCheckStatus" role="status"></p><button id="checkConnection" type="button">Check again</button></section>
+  <p id="setupError" class="error" role="alert" hidden></p>
+  <div class="setup-actions"><button id="skipSetup" type="button" class="text-button">Set up later</button><div><button id="setupBack" type="button" hidden>Back</button><button id="setupNext" type="button">Next</button><button id="finishSetup" type="button" hidden>Start chatting</button></div></div>
+</dialog>
+<dialog id="accountDialog"><form id="accountForm"><h2>Sign in</h2><p>Registration is closed. For details, <a href="mailto:zhjpersonal83@gmail.com">contact the developer</a>.</p><label>Email<input id="accountEmail" type="email" autocomplete="username" required></label><label>Password<input id="accountPassword" type="password" autocomplete="current-password" required></label><p id="accountError" role="alert"></p><button id="accountSubmit" type="submit">Sign in</button><button id="accountClose" type="button">Cancel</button></form></dialog><dialog id="accountSettings"><h2>Account settings</h2><p id="accountProfile"></p><form id="passwordForm"><h3>Change password</h3><label>Current password<input id="oldPassword" type="password" autocomplete="current-password" required></label><label>New password (12–256 characters)<input id="newPassword" type="password" autocomplete="new-password" minlength="12" maxlength="256" required></label><button type="submit">Change password</button></form><h3>API key vault</h3><p>Store multiple keys, choose the active key for each provider, or remove one. A key can only be stored once per account.</p><form id="keyForm"><label>Provider<select id="accountProvider"></select></label><label>Key name<input id="keyLabelInput" maxlength="120" required></label><label>New API key<input id="accountKey" type="password" autocomplete="off" required></label><button type="submit">Add and select key</button></form><div id="accountKeyList"></div><p id="settingsStatus" role="status"></p><button id="closeAccountSettings" type="button">Close</button></dialog><dialog id="importDialog"><h2>Import guest conversations?</h2><p>Guest conversations remain separate unless you choose to add them to this account.</p><label><input id="importCheck" type="checkbox"> Add guest conversations and their attachments to this account</label><p><button id="importConfirm" type="button">Continue</button></p></dialog><dialog id="libraryDialog"><h2>File library</h2><p id="libraryUsage"></p><p>The quota is 2 GB per account, including trash and pending uploads. Each uploaded file: up to 4 MiB. Accepted: PNG, JPEG, WebP, MP3, WAV, M4A, WebM audio, PDF and TXT. Chat accepts up to four images, 4 MiB combined.</p><label>Upload files<input id="libraryUpload" type="file" multiple accept="image/png,image/jpeg,image/webp,audio/mpeg,audio/wav,audio/x-wav,audio/mp4,audio/webm,application/pdf,text/plain"></label><p id="libraryMessage" role="status"></p><div id="libraryFiles" aria-busy="false"></div><nav class="file-library-pagination" aria-label="File pages"><button id="fileLibraryPrevious" type="button" disabled>← Previous</button><span id="fileLibraryPageInfo" aria-live="polite"></span><button id="fileLibraryNext" type="button" disabled>Next →</button></nav><p id="fileLibrarySelection" aria-live="polite"></p><p><button id="useLibraryFiles" type="button">Use selected in new chat</button> <button id="closeFileLibrary" type="button">Close</button></p></dialog><section id="cookieNotice" class="cookie-notice" role="dialog" aria-labelledby="cookieTitle" aria-describedby="cookieDescription" hidden><div><h2 id="cookieTitle">Cookie settings</h2><p id="cookieDescription">Necessary cookies support sign-in and temporary sessions. This site does not currently use analytics or advertising cookies. Language preferences and a tab identifier are stored in your browser.</p><label><input type="checkbox" checked disabled> Necessary cookies (required)</label></div><button id="acceptCookies" type="button">Use necessary cookies</button></section></body>
+</html>
