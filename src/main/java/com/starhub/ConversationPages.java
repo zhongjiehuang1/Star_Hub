@@ -12,20 +12,22 @@ final class ConversationPages {
     static final int PAGE_SIZE=4,MAX_CHATS=500,MAX_PAYLOAD_CHARACTERS=1_000_000,MAX_PAGE_BYTES=12*1024*1024;
     private ConversationPages(){}
     private record Item(String id,String title,long revision,String updated){}
-    static ObjectNode load(Connection c,long user,String generation,JsonNode request)throws Exception{
+    static ObjectNode load(Connection c,long user,String generation,JsonNode request)throws Exception{return load(c,user,generation,request,false);}
+    static ObjectNode loadBounded(Connection c,long user,String generation,JsonNode request)throws Exception{return load(c,user,generation,request,true);}
+    private static ObjectNode load(Connection c,long user,String generation,JsonNode request,boolean bounded)throws Exception{
         if(!request.path("paginationProtocol").isIntegralNumber()||request.path("paginationProtocol").asInt()!=1)
             throw new StorageFailure(428,"CHAT_CLIENT_UPGRADE_REQUIRED","请刷新页面后重新读取聊天记录。");
         JsonNode cursor=request.get("offset");int offset=0;
         if(cursor!=null){if(!cursor.isIntegralNumber()||!cursor.canConvertToInt())throw invalid();offset=cursor.asInt();}
         if(offset<0||offset>MAX_CHATS||generation==null||generation.isBlank())throw invalid();
-        List<Item> catalog=new ArrayList<>();ArrayNode stamp=ModelGateway.JSON.createArrayNode();
+        int catalogBytes=0;List<Item> catalog=new ArrayList<>();ArrayNode stamp=ModelGateway.JSON.createArrayNode();
         stamp.add(user);stamp.add(generation);
         try(PreparedStatement q=c.prepareStatement("SELECT chat_id,title,revision,updated_at FROM conversations WHERE user_id=? ORDER BY updated_at DESC,chat_id ASC LIMIT 501")){
             q.setLong(1,user);try(ResultSet r=q.executeQuery()){
                 while(r.next()){
                     if(catalog.size()==MAX_CHATS)throw new StorageFailure(413,"CHAT_CATALOG_LIMIT","聊天目录超过限制，请联系维护人员；原记录已保留。");
                     Timestamp changed=r.getTimestamp(4);if(changed==null)throw new SQLException("Conversation timestamp missing");
-                    Item item=new Item(r.getString(1),r.getString(2),r.getLong(3),changed.toInstant().toString());catalog.add(item);
+                    Item item=new Item(r.getString(1),r.getString(2),r.getLong(3),changed.toInstant().toString());if(bounded&&(catalogBytes+=item.id.getBytes(StandardCharsets.UTF_8).length+item.title.getBytes(StandardCharsets.UTF_8).length+128)>64*1024)throw boundedLimit();catalog.add(item);
                     stamp.addArray().add(item.id).add(item.title).add(item.revision).add(item.updated);
                 }
             }
@@ -39,6 +41,7 @@ final class ConversationPages {
         ArrayNode chats=out.putArray("chats");long bytes=0;int next=offset;
         while(next<catalog.size()&&chats.size()<PAGE_SIZE){
             Item item=catalog.get(next);String payload;
+            if(bounded)try(PreparedStatement size=c.prepareStatement("SELECT OCTET_LENGTH(payload) FROM conversations WHERE user_id=? AND chat_id=? AND revision=?")){size.setLong(1,user);size.setString(2,item.id);size.setLong(3,item.revision);try(ResultSet r=size.executeQuery()){if(!r.next())throw new StorageFailure(409,"CHAT_CATALOG_CHANGED","聊天记录已更改，请重新读取。");long raw=r.getLong(1);if(raw<0||raw>32*1024||bytes+raw>32*1024)throw boundedLimit();}}
             try(PreparedStatement q=c.prepareStatement("SELECT payload FROM conversations WHERE user_id=? AND chat_id=? AND revision=?")){
                 q.setLong(1,user);q.setString(2,item.id);q.setLong(3,item.revision);try(ResultSet r=q.executeQuery()){
                     if(!r.next())throw new StorageFailure(409,"CHAT_CATALOG_CHANGED","聊天记录已更改，请重新读取。");payload=r.getString(1);
@@ -56,5 +59,6 @@ final class ConversationPages {
         if(next<catalog.size())out.put("nextOffset",next);else out.putNull("nextOffset");
         return out;
     }
+    private static StorageFailure boundedLimit(){return new StorageFailure(413,"BOUNDED_CHAT_FALLBACK","此页面需要标准读取，请继续等待原有内容加载。");}
     private static StorageFailure invalid(){return new StorageFailure(400,"INVALID_CHAT_PAGE","聊天分页请求无效。");}
 }

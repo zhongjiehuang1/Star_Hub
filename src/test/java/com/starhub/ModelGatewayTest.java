@@ -16,10 +16,11 @@ class ModelGatewayTest {
     ModelGateway.Reply reply(int status, String text) { return new ModelGateway.Reply(status, text.getBytes(StandardCharsets.UTF_8)); }
     @Test void compatibleProvidersPreserveConversationAndNeverUseUserEndpoint() throws Exception {
         for (ModelGateway.Provider p : ModelGateway.PROVIDERS.values()) {
-            if (!p.protocol.equals("openai")) continue;
+            if (!p.protocol.equals("openai") || p.id.equals("openai")) continue;
             ObjectNode request = request(p.id);
             request.put("baseUrl", "http://127.0.0.1:3306");
-            ((ArrayNode) request.path("messages")).addObject().put("role", "assistant").put("content", "你好！");
+            ObjectNode previous=((ArrayNode) request.path("messages")).addObject().put("role", "assistant").put("content", "你好！");
+            if(p.id.equals("moonshot")){previous.put("provider","moonshot").put("model",request.path("model").asText());previous.putObject("providerReasoning").put("provider","moonshot").put("model",request.path("model").asText()).put("content","private-thought");}
             ((ArrayNode) request.path("messages")).addObject().put("role", "user").put("content", "继续");
             ModelGateway g = new ModelGateway((uri, headers, bytes) -> {
                 assertEquals(p.base + "/chat/completions", uri.toString());
@@ -29,12 +30,23 @@ class ModelGatewayTest {
                 assertEquals("system", body.path("messages").get(0).path("role").asText());
                 assertEquals("你好！", body.path("messages").get(2).path("content").asText());
                 assertEquals(request.path("model").asText(), body.path("model").asText());
-                return reply(200, "{\"choices\":[{\"message\":{\"content\":\"回答\"}}],\"usage\":{\"total_tokens\":10}}");
+                return reply(200, "{\"choices\":[{\"message\":{\"content\":\"回答\",\"reasoning_content\":\"private-thought\"}}],\"usage\":{\"total_tokens\":10}}");
             });
             ObjectNode result = g.chat(request);
             assertEquals("回答", result.path("text").asText());
             assertEquals(10, result.path("usage").path("total_tokens").asInt());
         }
+    }
+    @Test void kimiHistoryRequiresBoundReasoningAndRejectsCrossModel() throws Exception {
+        ObjectNode req=request("moonshot");ArrayNode messages=(ArrayNode)req.path("messages");
+        ObjectNode prior=messages.addObject().put("role","assistant").put("content","answer").put("provider","moonshot").put("model",req.path("model").asText());
+        messages.addObject().put("role","user").put("content","follow up");
+        assertThrows(ModelGateway.Problem.class,()->ModelGateway.prepare(req,false));
+        prior.putObject("providerReasoning").put("provider","moonshot").put("model",req.path("model").asText()).put("content","thinking");
+        assertEquals("thinking",ModelGateway.prepare(req,false).body.path("messages").get(2).path("reasoning_content").asText());
+        ((ObjectNode)prior.path("providerReasoning")).put("model","another-model");assertThrows(ModelGateway.Problem.class,()->ModelGateway.prepare(req,false));
+        ((ObjectNode)prior.path("providerReasoning")).put("model",req.path("model").asText()).put("content","x".repeat(100001));assertThrows(ModelGateway.Problem.class,()->ModelGateway.prepare(req,false));
+        prior.remove("providerReasoning");prior.put("provider","another-provider").put("model","different");assertFalse(ModelGateway.prepare(req,false).body.path("messages").get(2).has("reasoning_content"));
     }
     @Test void anthropicSeparatesSystemAndExtractsTextOnly() throws Exception {
         ModelGateway g = new ModelGateway((uri, headers, bytes) -> {
@@ -54,7 +66,7 @@ class ModelGatewayTest {
         ((ArrayNode) req.path("messages")).addObject().put("role", "assistant").put("content", "你好！");
         ((ArrayNode) req.path("messages")).addObject().put("role", "user").put("content", "继续");
         ModelGateway g = new ModelGateway((uri, headers, bytes) -> {
-            assertEquals("https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent", uri.toString());
+            assertEquals("https://generativelanguage.googleapis.com/v1beta/models/gemini-4-carbon:generateContent", uri.toString());
             assertEquals("test-key", headers.get("x-goog-api-key"));
             assertNull(uri.getQuery());
             JsonNode body = ModelGateway.JSON.readTree(bytes);
@@ -97,12 +109,21 @@ class ModelGatewayTest {
         assertThrows(ModelGateway.Problem.class,()->ModelGateway.prepare(other,false));
     }
     @Test void officialSearchConfigurationsAreProviderSpecific() throws Exception {
-        ObjectNode deep=request("deepseek").put("model","deepseek-v4-pro").put("webSearch",true);ModelGateway.Prepared d=ModelGateway.prepare(deep,true);
-        assertEquals("https://api.deepseek.com/v1/responses",d.uri.toString());assertEquals("web_search",d.body.path("tools").path(0).path("type").asText());assertTrue(d.responses);
-        ObjectNode claude=request("anthropic").put("model","claude-opus-5-5").put("webSearch",true);assertEquals("web_search_20250305",ModelGateway.prepare(claude,true).body.path("tools").path(0).path("type").asText());
+        ObjectNode claude=request("anthropic").put("model","claude-fable-5-2").put("webSearch",true);assertEquals("web_search_20250305",ModelGateway.prepare(claude,true).body.path("tools").path(0).path("type").asText());
         ObjectNode qwen=request("qwen").put("model","qwen3.8-max").put("webSearch",true);assertTrue(ModelGateway.prepare(qwen,true).body.path("enable_search").asBoolean());
         ObjectNode xai=request("xai").put("model","grok-4.7").put("webSearch",true);assertEquals("https://api.x.ai/v1/responses",ModelGateway.prepare(xai,true).uri.toString());
-        deep.put("model","deepseek-flash");assertThrows(ModelGateway.Problem.class,()->ModelGateway.prepare(deep,true));
+        ObjectNode deep=request("deepseek").put("model","deepseek-flash").put("webSearch",true);assertThrows(ModelGateway.Problem.class,()->ModelGateway.prepare(deep,true));
     }
-    @Test void geminiSearchUsesGoogleTool() throws Exception {ObjectNode r=request("gemini").put("model","gemini-3.8-flash").put("webSearch",true);assertTrue(ModelGateway.prepare(r,true).body.path("tools").path(0).has("google_search"));}
+    @Test void currentSecondaryModelsUseTheirOfficialSearchProtocol() throws Exception {
+        ObjectNode qwen=request("qwen").put("model","qwen3.8-flash").put("webSearch",true);
+        ModelGateway.Prepared q=ModelGateway.prepare(qwen,true);
+        assertEquals("https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions",q.uri.toString());
+        assertTrue(q.body.path("enable_search").asBoolean());
+        ObjectNode xai=request("xai").put("model","grok-4.6").put("webSearch",true);
+        ModelGateway.Prepared x=ModelGateway.prepare(xai,true);
+        assertEquals("https://api.x.ai/v1/responses",x.uri.toString());
+        assertEquals("web_search",x.body.path("tools").path(0).path("type").asText());
+        assertTrue(x.responses);
+    }
+    @Test void geminiSearchUsesGoogleTool() throws Exception {ObjectNode r=request("gemini").put("model","gemini-4-carbon").put("webSearch",true);assertTrue(ModelGateway.prepare(r,true).body.path("tools").path(0).has("google_search"));}
 }

@@ -8,8 +8,14 @@ import jakarta.servlet.http.*;
 public final class ClusterFilter implements Filter {
     public void doFilter(ServletRequest request,ServletResponse response,FilterChain chain)throws IOException,ServletException{
         HttpServletResponse res=(HttpServletResponse)response;
+        HttpServletRequest http=(HttpServletRequest)request;
+        if(BoundedChatRead.selected(http)){
+            // Admission inside run() precedes this supplier. Rejected readers perform no readiness probes or SQL.
+            BoundedChatRead.run(http,res,()->{FileStorage active=FileStorage.get();active.ensureReady();return active.config;});
+            return;
+        }
         FileStorage service;
-        try{service=FileStorage.get();service.ensureReady();}
+        try{service=FileStorage.get();if(!service.replicated||service.atomic==null)service.ensureReady();}
         catch(Exception unavailable){
             res.setStatus(503);res.setContentType("application/json;charset=UTF-8");res.setHeader("Cache-Control","no-store");
             ModelGateway.JSON.writeValue(res.getOutputStream(),ModelGateway.JSON.createObjectNode()

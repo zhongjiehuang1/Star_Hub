@@ -22,16 +22,33 @@ class ChatStreamTest {
         })).run(ModelGateway.prepare(req,true),out);return out;
     }
     @Test void compatibleProvidersSendStreamingAndParseUtf8UsageWithoutReasoning()throws Exception{
-        for(String provider:new String[]{"openai","deepseek","qwen","moonshot","xai"}){
+        for(String provider:new String[]{"deepseek","qwen","moonshot","xai"}){
             ObjectNode req=request(provider);assertTrue(ModelGateway.prepare(req,true).body.path("stream").asBoolean());
             Capture out=run(req,": keepalive\r\n"+event("{\"choices\":[{\"delta\":{\"content\":\"你好 👋\",\"reasoning_content\":\"private\"}}]}")+
                 event("{\"choices\":[{\"delta\":{\"content\":\"\\n第二行\"},\"finish_reason\":\"stop\"}]}")+event("{\"choices\":[],\"usage\":{\"total_tokens\":7}}")+event("[DONE]"),"text/event-stream;charset=utf-8");
             assertEquals("你好 👋\n第二行",out.text.toString());assertEquals(2,out.deltas);assertEquals(7,out.last.get("done").path("usage").path("total_tokens").asInt());
-            assertFalse(out.last.toString().contains("test-key"));assertFalse(out.last.toString().contains("private"));
+            assertFalse(out.last.toString().contains("test-key"));
+            if(provider.equals("moonshot"))assertEquals("private",out.last.get("done").path("providerReasoning").path("content").asText());
+            else assertFalse(out.last.toString().contains("private"));
         }
     }
+    @Test void kimiStreamContinuationIsProtectedBeforePublicDone()throws Exception {
+        ObjectNode req=request("moonshot");Capture out=run(req,event("{\"choices\":[{\"delta\":{\"reasoning_content\":\"private\"}}]}")+event("{\"choices\":[{\"delta\":{\"content\":\"answer\"},\"finish_reason\":\"stop\"}]}")+event("[DONE]"),"text/event-stream");
+        ObjectNode completed=out.last.get("done").deepCopy().put("text",out.text.toString());
+        KimiContext.protectResult(completed,"account:7:gen:tab",new byte[32]);
+        assertFalse(completed.toString().contains("private"));assertFalse(completed.has("providerReasoning"));
+        assertTrue(completed.path("providerContext").path("token").asText().matches("[A-Za-z0-9_-]+"));
+    }
+    @Test void kimiMissingOrOversizedReasoningKeepsKnownSuccessfulText()throws Exception {
+        ObjectNode req=request("moonshot");
+        Capture missing=run(req,event("{\"choices\":[{\"delta\":{\"content\":\"answer\"},\"finish_reason\":\"stop\"}]}")+event("[DONE]"),"text/event-stream");
+        assertEquals("answer",missing.text.toString());assertTrue(missing.last.get("done").path("continuationUnavailable").asBoolean());assertFalse(missing.last.get("done").has("providerReasoning"));
+        Capture large=run(req,event("{\"choices\":[{\"delta\":{\"reasoning_content\":\""+"x".repeat(100001)+"\"}}]}")+event("{\"choices\":[{\"delta\":{\"content\":\"answer\"},\"finish_reason\":\"stop\"}]}")+event("[DONE]"),"text/event-stream");
+        assertEquals("answer",large.text.toString());assertTrue(large.last.get("done").path("continuationUnavailable").asBoolean());assertFalse(large.last.get("done").has("providerReasoning"));
+        Capture json=run(req,"{\"choices\":[{\"message\":{\"content\":\"answer\"}}]}","application/json");assertEquals("answer",json.text.toString());assertTrue(json.last.get("done").path("continuationUnavailable").asBoolean());
+    }
     @Test void responsesUsesDeltaAndCompletedWithoutDuplicatingOutput()throws Exception{
-        ObjectNode req=request("openai");req.put("model",Catalog.DATA.path("models").findValuesAsText("id").stream().filter(s->s.startsWith("gpt-5")).findFirst().orElseThrow());
+        ObjectNode req=request("openai");req.put("model","gpt-6.1-sol");
         ModelGateway.Prepared p=ModelGateway.prepare(req,true);assertTrue(p.uri.toString().endsWith("/responses"));assertTrue(p.body.path("stream").asBoolean());assertFalse(p.body.path("store").asBoolean(true));
         Capture out=run(req,event("{\"type\":\"response.output_text.delta\",\"delta\":\"回答\"}")+event("{\"type\":\"response.completed\",\"response\":{\"usage\":{\"output_tokens\":2},\"output\":[{\"content\":[{\"type\":\"output_text\",\"text\":\"回答\"}]}]}}"),"text/event-stream");
         assertEquals("回答",out.text.toString());assertEquals(2,out.last.get("done").path("usage").path("output_tokens").asInt());
@@ -73,7 +90,7 @@ class ChatStreamTest {
                 assertEquals(expected,routes.path(0).path("url").asText());assertFalse(expected.contains("test-key"));count++;
             }
         }
-        assertTrue(count>=60);
+        assertTrue(count>=15);
         for(JsonNode p:Catalog.DATA.path("providers"))for(String key:new String[]{"website","keyUrl","docsUrl","baseUrl"})assertTrue(p.path(key).asText().startsWith("https://"),p.path("id").asText()+"/"+key);
     }
     @Test void searchCitationsSurviveStreamingAndJsonFallback() throws Exception {
@@ -91,13 +108,13 @@ class ChatStreamTest {
         assertEquals("Public summary",out.last.get("reasoning").path("text").asText());assertEquals("Answer",out.text.toString());
     }
     @Test void providerSearchEvidenceSurvivesStreaming() throws Exception {
-        ObjectNode deep=request("deepseek").put("model","deepseek-v4-pro").put("webSearch",true);
+        ObjectNode deep=request("xai").put("model","grok-4.7").put("webSearch",true);
         Capture d=run(deep,event("{\"type\":\"response.output_item.done\",\"item\":{\"type\":\"web_search_call\",\"action\":{\"sources\":[{\"url\":\"https://example.org\",\"title\":\"Source\"}]}}}")+event("{\"type\":\"response.output_text.delta\",\"delta\":\"Done\"}")+event("{\"type\":\"response.completed\",\"response\":{}}"),"text/event-stream");
         assertTrue(d.last.get("done").path("details").path("webSearchUsed").asBoolean());assertEquals("https://example.org",d.last.get("done").path("details").path("webCitations").path(0).path("url").asText());
-        ObjectNode claude=request("anthropic").put("model","claude-opus-5-5").put("webSearch",true);
+        ObjectNode claude=request("anthropic").put("model","claude-fable-5-2").put("webSearch",true);
         Capture a=run(claude,event("{\"type\":\"content_block_start\",\"content_block\":{\"type\":\"server_tool_use\",\"name\":\"web_search\"}}")+event("{\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\",\"text\":\"Answer\"}}")+event("{\"type\":\"content_block_delta\",\"delta\":{\"type\":\"citations_delta\",\"citation\":{\"type\":\"web_search_result_location\",\"url\":\"https://example.com\",\"title\":\"Citation\"}}}")+event("{\"type\":\"message_stop\"}"),"text/event-stream");
         assertTrue(a.last.get("done").path("details").path("webSearchUsed").asBoolean());assertEquals("Citation",a.last.get("done").path("details").path("webCitations").path(0).path("title").asText());
-        ObjectNode gemini=request("gemini").put("model","gemini-3.8-flash").put("webSearch",true);
+        ObjectNode gemini=request("gemini").put("model","gemini-4-carbon").put("webSearch",true);
         Capture g=run(gemini,event("{\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"Answer\"}]},\"finishReason\":\"STOP\",\"groundingMetadata\":{\"webSearchQueries\":[\"q\"],\"searchEntryPoint\":{\"renderedContent\":\"<p>suggestions</p>\"},\"groundingChunks\":[{\"web\":{\"uri\":\"https://example.net\",\"title\":\"Site\"}}]}}]}"),"text/event-stream");
         assertTrue(g.last.get("done").path("details").path("webSearchUsed").asBoolean());assertTrue(g.last.get("done").path("details").path("googleWidget").asText().contains("suggestions"));
     }

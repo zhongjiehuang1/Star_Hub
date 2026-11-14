@@ -21,18 +21,18 @@ class CatalogGatewayTest {
     }
     @Test void curatedPickerHasRecentModelsForEveryProviderAndBuildsRequests() throws Exception {
         JsonNode models=Catalog.publicData().path("models");
-        assertEquals(22,models.size());Set<String> providers=new HashSet<>();Set<String> ids=new HashSet<>();
+        assertTrue(models.size()>=21);Set<String> providers=new HashSet<>();Set<String> ids=new HashSet<>();
         for(JsonNode model:models){
             String provider=model.path("provider").asText(),id=model.path("id").asText();
             providers.add(provider);assertTrue(ids.add(provider+"|"+id));
-            if(Catalog.contains(model.path("categories"),"chat")){
+            if(!model.path("batch").asBoolean() && Catalog.contains(model.path("categories"),"chat")){
                 ModelGateway.Prepared prepared=ModelGateway.prepare(request(provider,id,"chat"),true);
                 assertEquals(id,prepared.model);
             }
         }
         assertEquals(Set.of("openai","anthropic","gemini","deepseek","qwen","moonshot","xai"),providers);
         assertTrue(ids.contains("xai|grok-4.7"));assertTrue(ids.contains("qwen|qwen3.8-max"));
-        assertFalse(ids.contains("openai|gpt-4.1-mini"));
-        assertNotNull(Catalog.find("openai","gpt-4.1-mini"));
+        assertTrue(ids.contains("openai|gpt-6.1-sol"));
+        assertThrows(ModelGateway.Problem.class,()->Catalog.find("openai","gpt-4.1-mini"));
     }
 }

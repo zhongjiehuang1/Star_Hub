@@ -288,7 +288,7 @@ final class ProviderOperations {
         Map<Integer,Long> result=new TreeMap<>();try(PreparedStatement q=c.prepareStatement("SELECT node_id,reserved_bytes FROM starhub_provider_capacity WHERE operation_id=? ORDER BY node_id FOR UPDATE")){q.setString(1,operation);try(ResultSet r=q.executeQuery()){while(r.next())result.put(r.getInt(1),r.getLong(2));}}return result;
     }
     private Map<Integer,Long> totals(Connection c)throws SQLException {
-        Map<Integer,Long> result=new TreeMap<>();try(Statement q=c.createStatement();ResultSet r=q.executeQuery("SELECT node_id,reserved_bytes FROM starhub_capacity_totals ORDER BY node_id FOR UPDATE")){while(r.next())result.put(r.getInt(1),r.getLong(2));}if(!result.keySet().equals(Set.of(1,2)))throw new SQLException("Physical reservation totals are unavailable");return result;
+        Map<Integer,Long> result=new TreeMap<>();try(Statement q=c.createStatement();ResultSet r=q.executeQuery("SELECT node_id,reserved_bytes FROM starhub_capacity_totals ORDER BY node_id FOR UPDATE")){while(r.next())result.put(r.getInt(1),r.getLong(2));}if(!result.keySet().equals(SingleDatabase.enabled(database.config)?Set.of(2):Set.of(1,2)))throw new SQLException("Physical reservation totals are unavailable");return result;
     }
     private void reserve(Connection c,String operation)throws Exception {reserve(c,operation,true);}
     private void reserve(Connection c,String operation,boolean check)throws Exception {

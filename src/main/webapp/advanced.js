@@ -122,7 +122,7 @@ $('connectRealtime').onclick=async()=>{
     if(!rt||rt.generation!==generation)return;
     const url=new URL('realtime',location.href);url.protocol=location.protocol==='https:'?'wss:':'ws:';
     const socket=new WebSocket(url);rt.socket=socket;
-    socket.onopen=()=>{if(rt?.generation===generation){operation.fresh=false;rtSend({type:'starhub.connect',...operation.body});}};
+    socket.onopen=async()=>{try{await StarProviderOperations.beforeDispatch(operation);if(rt?.generation===generation){operation.fresh=false;rtSend({type:'starhub.connect',...operation.body});}}catch(error){if(rt?.generation===generation)endRealtime(error.message);}};
     socket.onmessage=e=>{if(rt?.generation!==generation)return;try{rtEvent(JSON.parse(e.data));}catch{endRealtime(t("无法处理实时数据，连接已结束。"));}};
     socket.onerror=()=>{if(rt?.generation===generation)endRealtime(t("实时连接失败，请检查 Key、余额、模型权限及网络。"));};
     socket.onclose=()=>{if(rt?.generation===generation)endRealtime(t("实时连接已结束。"));};

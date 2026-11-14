@@ -7,6 +7,7 @@ const costNames = {"free-key":t("免费模型 · 需 Key"),paid:t("按量计费 
 let chats = [], current, lastDeleted, cloudHydrating=false;
 const restoredSelection=StarStore.selection();
 const keys = new Map(), settings = new Map(Object.entries(restoredSelection.models&&typeof restoredSelection.models==='object'?restoredSelection.models:{}));
+const directionSettings = new Map(Object.entries(restoredSelection.directions&&typeof restoredSelection.directions==='object'?restoredSelection.directions:{}));
 const providerRetries = new Map(); // Frozen requests remain in memory only; credentials never enter chat history.
 const publicInsecure = location.protocol !== 'https:' && !['localhost', '127.0.0.1', '[::1]'].includes(location.hostname);
 function showError(message) { $('error').textContent = errorText(message); $('error').hidden = !message; }
@@ -57,24 +58,76 @@ function saveSettings() {
   const id = $('provider').value;
   keys.set(id, $('apiKey').value);
   if(!StarStore.saveKeys(keys))showError(t('无法保存临时会话，请检查浏览器存储空间。'));
-  if($('model').value)settings.set(id, $('model').value);
-  if(ready&&$('model').value)StarStore.saveSelection(id,settings);
+  if(ready)StarStore.saveSelection(id,settings,directionSettings);
   updateConnection();if(typeof refreshConnectionSummary==='function')refreshConnectionSummary();
 }
 function selectedModel() { return catalog?.models.find(m => m.provider === $('provider').value && m.id === $('model').value); }
+function validatedProviderContext(value,provider,model) {
+  if(provider!=='moonshot'||typeof model!=='string'||!model||!value||typeof value!=='object'||value.provider!==provider||value.model!==model||typeof value.token!=='string'||!value.token.length||value.token.length>140000||!/^[A-Za-z0-9_-]+$/.test(value.token))return undefined;
+  return {provider,model,token:value.token};
+}
+function outgoingHistoryMessage(message,provider,model) {
+  const out={role:message.role,content:message.content,...(message.image?{image:message.image}:{}),...(message.images?.length?{images:message.images}:{})};
+  if(message.role==='assistant') {
+    if(typeof message.provider==='string'&&message.provider.length<=200)out.provider=message.provider;
+    if(typeof message.model==='string'&&message.model.length<=200)out.model=message.model;
+    const context=message.provider===provider&&message.model===model?validatedProviderContext(message.providerContext,provider,model):undefined;
+    if(context)out.providerContext=context;
+  }
+  return out;
+}
+function primaryDirection(model) {
+  if(model.categories.includes('embeddings'))return undefined;
+  if(model.batch)return 'more';
+  if(model.categories.includes('chat'))return 'general';
+  if(model.categories.includes('image'))return 'image';
+  if(model.categories.includes('video'))return 'video';
+  if(model.categories.some(x=>['speech','transcription','realtime'].includes(x)))return 'voice';
+  return undefined;
+}
+function directionModels(direction) {
+  return catalog.models.filter(m=>primaryDirection(m)===direction);
+}
+function modelTierLabel(model) { return model.selectionTier==='flagship'?t('旗舰'):model.selectionTier==='secondary'?t('次旗舰'):''; }
+function modelOptionLabel(model) { return [model.name,modelTierLabel(model),model.accessLabel].filter(Boolean).join(' · '); }
+function preferredModelId(provider,direction,models,saved) {
+  const usable=models.filter(m=>m.execution!=='external');
+  const byId=value=>usable.find(m=>m.id===value||m.uid===value);
+  const preferred=catalog.featured?.preferredDefault?.[provider]?.[direction];
+  const primary=catalog.featured?.primary?.[provider]?.[direction];
+  return (byId(saved)||byId(preferred)||byId(primary)||[...usable].sort((a,b)=>a.id.localeCompare(b.id))[0])?.id;
+}
+function rememberModelChoice(model) {
+  const direction=model&&primaryDirection(model);
+  if(!direction)return;
+  settings.set(model.provider,model.id);
+  directionSettings.set(`${model.provider}|${direction}`,model.id);
+}
+
+function updateAvailableDirections() {
+  for(const id of ['modelDirection','libraryDirection']) {
+    const control=$(id);
+    for(const option of control.options) { const available=directionModels(option.value).length>0; option.hidden=!available; option.disabled=!available; }
+    if(!control.value||control.selectedOptions[0]?.disabled)control.value='general';
+  }
+}
 function selectProvider(wanted) {
   const p = providers.find(p => p.id === $('provider').value);
+  if(typeof wanted==='string'){const restored=catalog.models.find(m=>m.provider===p.id&&m.id===wanted);if(restored&&primaryDirection(restored))$('modelDirection').value=primaryDirection(restored);}
+  const direction=$('modelDirection').value;
+  $('directionNotice').textContent=direction==='video'?(language==='zh'?'视频生成暂未接入；视频理解不等于视频生成。':'Video generation is not integrated. Video understanding is a different capability.'):(direction==='more'?(language==='zh'?'批处理任务。':'Batch jobs.'):(language==='zh'?'旗舰精选 · 仅展示本站已接入的能力。':'Flagship picks · capabilities integrated in this workspace.'));
   const needle = $('modelSearch').value.trim().toLowerCase();
-  const models = catalog.models.filter(m => m.provider === p.id && `${m.name} ${m.id} ${m.vendorName}`.toLowerCase().includes(needle));
+  const models = directionModels(direction).filter(m => m.provider === p.id && `${m.name} ${m.id} ${m.vendorName}`.toLowerCase().includes(needle));
   $('model').replaceChildren();
   const groups = new Map();
   for (const m of models) {
     const name = `${m.vendorName} · ${m.family}`;
     if (!groups.has(name)) { const g = document.createElement('optgroup'); g.label = name; groups.set(name,g); $('model').append(g); }
-    groups.get(name).append(new Option(m.name+(m.accessLabel?` · ${m.accessLabel}`:''),m.id));
+    groups.get(name).append(new Option(modelOptionLabel(m),m.id));
   }
-  const choice = typeof wanted === 'string' ? wanted : settings.get(p.id);
-  if (models.some(m => m.id === choice)) $('model').value = choice;
+  const choice = typeof wanted === 'string' && models.some(m=>m.id===wanted) ? wanted : (directionSettings.get(`${p.id}|${direction}`)||settings.get(p.id));
+  const selected = preferredModelId(p.id,direction,models,choice);
+  if (selected) $('model').value = selected;
   $('model').disabled = !models.length;
   $('apiKey').value = keys.get(p.id) || '';
   $('apiKey').type = 'password'; $('toggleKey').textContent = t("显示"); $('toggleKey').setAttribute('aria-label',t("显示 API Key")); $('toggleKey').setAttribute('aria-pressed','false');
@@ -86,7 +139,7 @@ function configureModel() {
   if (!m) { document.dispatchEvent(new CustomEvent('starhub:modelchanged')); $('modelSettings').hidden=true; $('selectedSummary').textContent = t("没有匹配模型，请调整搜索。"); for(const id of ['batchPanel','realtimePanel','taskControls'])$(id).hidden=true; $('chatForm').hidden=false; $('prompt').disabled=false; updateConnection(); return; }
   $('selectedSummary').textContent = `${m.vendorName} · ${m.family} · ${uiText(costNames[m.cost])}`;
   $('keyLabel').textContent = m.keyLabel;
-  const tasks=m.categories.filter(c => c!=='vision');
+  const tasks=m.categories.filter(c => c!=='vision' && c!=='embeddings');
   $('task').replaceChildren(...tasks.map(c => new Option(catalog.categories[c],c)));
   $('effort').append(...m.reasoning.map(e => new Option(`${uiText(effortNames[e]) || e} (${e})`,e)));
   $('effort').disabled = !m.reasoning.length;
@@ -95,7 +148,7 @@ function configureModel() {
 }
 function refreshSearchControls() {
   const m=selectedModel(), task=$('task').value;
-  const searchSupported=task==='chat' && ((m?.provider==='openai' && /^(gpt-[56]|o[134])/.test(m.id)) || m?.provider==='anthropic' || m?.provider==='gemini' || (m?.provider==='deepseek' && ['deepseek-v4-pro','deepseek-flash'].includes(m.id)) || m?.provider==='moonshot' || (m?.provider==='xai' && m.id==='grok-4.7') || (m?.provider==='qwen' && ['qwen3.8-max','qwen3.8-flash','qwen3.7-plus'].includes(m.id)));
+  const searchSupported=task==='chat' && ((m?.provider==='openai' && /^(gpt-[56]|o[134])/.test(m.id)) || m?.provider==='anthropic' || m?.provider==='gemini' || (m?.provider==='deepseek' && m.id==='deepseek-flash') || m?.provider==='moonshot' || (m?.provider==='xai' && ['grok-4.7','grok-4.6'].includes(m.id)) || (m?.provider==='qwen' && ['qwen3.8-max','qwen3.8-flash'].includes(m.id)));
   $('searchControls').hidden=task!=='chat'; $('webSearch').disabled=!searchSupported;
   $('searchLabel').textContent=language==='zh'?'联网搜索':'Web search';
   $('searchHelp').textContent=language==='zh'?(searchSupported?(m.provider==='qwen'?'模型按需搜索，可能额外收费；当前接口不返回来源列表。':(m.provider==='moonshot'||m.provider==='deepseek'&&m.id==='deepseek-flash'?'每次发送都会搜索，可能额外收费。':'模型按需搜索，可能产生额外费用。')):'此模型的联网搜索尚未接入。'):(searchSupported?(m.provider==='qwen'?'Search may cost extra; this interface does not return source lists.':(m.provider==='moonshot'||m.provider==='deepseek'&&m.id==='deepseek-flash'?'Each message triggers a paid search.':'The model may search when needed. Searches can incur extra charges.')):'Web search is not integrated for this model.');
@@ -110,7 +163,7 @@ function configureTask() {
   if(['image','video','3d'].includes(task))$('fileLabel').hidden=!(m.referenceLimits?.image>0);
   $('inputFile').accept=['transcription','audiofx'].includes(task)?'audio/*,.mp4,.m4a':'image/png,image/jpeg,image/webp';
   $('documentsLabel').hidden=task!=='rerank'; $('questionLabel').hidden=task!=='decisions';
-  const helps={chat:t("可附一张 PNG、JPEG 或 WebP 图片。图片保留在本页对话上下文中；更换为不支持图片的模型时请新建对话。"),image:t("描述想生成的图片，也可上传参考图。部分编辑模型必须提供图片。"),video:t("描述视频内容。异步任务会显示任务 ID，可手动检查进度；不要重复提交同一任务。"),speech:t("输入需要朗读的文字。"),music:t("描述音乐风格、节奏或音效内容。"),audio:t("描述要生成的语音或音乐，返回后可直接播放。"),audiofx:t("上传源音频。人声隔离至少需要 4.6 秒；变声可选择声音；音轨分离返回 ZIP。"),transcription:t("上传音频后发送，文本框可填写备注。"),embeddings:t("输入需要转换为向量的文字，结果以 JSON 展示。"),rerank:t("主输入框填写查询内容，下方每行填写一条待排序文档。"),decisions:t("主输入框填写待分析材料，再填写需要判断的是非问题。"),'3d':t("描述需要生成的 3D 资产；部分模型要求参考图片。"),realtime:t("点击连接后可以开始说话；对话型模型也支持在下方输入文字，转写模型只接收语音。")};
+  const helps={chat:t("可附一张 PNG、JPEG 或 WebP 图片。图片保留在本页对话上下文中；更换为不支持图片的模型时请新建对话。"),image:t("描述想生成的图片，也可上传参考图。部分编辑模型必须提供图片。"),video:t("描述视频内容。异步任务会显示任务 ID，可手动检查进度；不要重复提交同一任务。"),speech:t("输入需要朗读的文字。"),music:t("描述音乐风格、节奏或音效内容。"),audio:t("描述要生成的语音或音乐，返回后可直接播放。"),audiofx:t("上传源音频。人声隔离至少需要 4.6 秒；变声可选择声音；音轨分离返回 ZIP。"),transcription:t("上传音频后发送，文本框可填写备注。"),rerank:t("主输入框填写查询内容，下方每行填写一条待排序文档。"),decisions:t("主输入框填写待分析材料，再填写需要判断的是非问题。"),'3d':t("描述需要生成的 3D 资产；部分模型要求参考图片。"),realtime:t("点击连接后可以开始说话；对话型模型也支持在下方输入文字，转写模型只接收语音。")};
   $('taskHelp').textContent=helps[task]||'';
   $('prompt').placeholder=task==='chat'?t("有什么想法，尽管说说…"):task==='transcription'?t("可选：本次转写备注"):t("输入生成描述、文本或查询内容…");
   $('prompt').required=!['transcription','audiofx'].includes(task);
@@ -152,7 +205,7 @@ function render({toBottom = false} = {}) {
   let index = 0;
   for (const message of current.messages) {
     // Text deltas reuse their row; media/metadata changes replace only that message.
-    const state = [message.media, message.details, message.status, message.jobId, message.image, message.seconds, message.providerName, message.model, message.role, message.warning, language, message.attachmentOmitted, message.imageUnavailable, message.incomplete, message.mediaRefs, message.mediaLoading, message.images, message.attachments, Boolean(message.startedAt), Boolean(message.reasoningSummary), message.thinkingSeconds!=null];
+    const state = [message.media, message.details, message.status, message.jobId, message.image, message.seconds, message.providerName, message.model, message.role, message.warning, language, message.attachmentOmitted, message.imageUnavailable, message.incomplete, message.continuationUnavailable, message.mediaRefs, message.mediaLoading, message.images, message.attachments, Boolean(message.startedAt), Boolean(message.reasoningSummary), message.thinkingSeconds!=null];
     let view = messageViews.get(message);
     if (!view || state.some((value, i) => value !== view.state[i])) {
 
@@ -169,8 +222,9 @@ function render({toBottom = false} = {}) {
     body.append(content);
     if(message.attachmentOmitted)body.append(element('p',t("附件未保存在本机。"),'reply-warning'));
     if(message.imageUnavailable)body.append(element('p',t("图片已被删除或暂时无法读取；如在回收箱中，可恢复后刷新页面。"),'reply-warning'));
-    if(message.incomplete)body.append(element('p',t("这条回复在保存时尚未完成。"),'reply-warning'));
-    if(message.warning)body.append(element('p',errorText(message.warning),'reply-warning'));if(message.details?.webSearchUsed)body.append(element('p',t('已进行联网搜索。'),'search-used'));if(message.details?.googleWidget){const frame=document.createElement('iframe');frame.className='google-suggestions';frame.title=t('Google 搜索建议');frame.setAttribute('sandbox','allow-popups allow-popups-to-escape-sandbox');frame.srcdoc=message.details.googleWidget;body.append(frame);}
+    if(message.incomplete&&message.startedAt==null)body.append(element('p',t("这条回复在保存时尚未完成。"),'reply-warning'));
+    if(message.continuationUnavailable===true&&message.provider==='moonshot')body.append(element('p',t('此回复无法继续对话，请新建对话；原内容已保留。'),'reply-warning'));
+    const visibleWarning=String(message.warning||'').split('Degraded mode: this result currently has one active copy.').join('').trim();if(visibleWarning)body.append(element('p',errorText(visibleWarning),'reply-warning'));if(message.details?.webSearchUsed)body.append(element('p',t('已进行联网搜索。'),'search-used'));if(message.details?.googleWidget){const frame=document.createElement('iframe');frame.className='google-suggestions';frame.title=t('Google 搜索建议');frame.setAttribute('sandbox','allow-popups allow-popups-to-escape-sandbox');frame.srcdoc=message.details.googleWidget;body.append(frame);}
     appendMedia(body,message.media);appendGeneratedPreviewControl(body,message);if(message.details&&Object.keys(message.details).length){const details=element('details',undefined,'result-details');details.append(element('summary',t("查看完整结果 / 参数反馈")),element('pre',JSON.stringify(message.details,null,2)));const save=element('button',t("导出详细结果"));save.onclick=()=>downloadJson(message.details,'Star-Hub-result.json');details.append(save);body.append(details);}if(message.image)appendMedia(body,[{type:'image',url:message.image}]);if(message.images?.length)appendMedia(body,message.images.map(url=>({type:'image',url}))); if(message.attachments?.length)appendMedia(body,message.attachments.map(url=>({type:url.startsWith('data:image/')?'image':url.startsWith('data:audio/')?'audio':'file',url})));
     if(message.jobId && !['completed','failed','cancelled','expired'].includes(message.status)) { const check=document.createElement('button');check.className='text-button';check.textContent=t("检查视频进度");check.disabled=busy;check.addEventListener('click',()=>checkVideo(message));body.append(check); }
     if (message.role === 'assistant') {
@@ -193,7 +247,7 @@ function render({toBottom = false} = {}) {
       view.renderKey=renderKey;
     }
     view.content.classList.toggle('reply-typing',Boolean(message.revealing));
-    if(view.reasoning){const elapsed=message.thinkingSeconds??((performance.now()-(message.startedAt||performance.now()))/1000);view.reasoning.querySelector('summary').textContent=`${message.thinkingSeconds==null?t('思考中'):t('已思考')} · ${Number(elapsed).toFixed(1)}s`;view.reasoning.classList.toggle('thinking-active',message.thinkingSeconds==null&&Boolean(message.startedAt));view.reasoning.querySelector('.reasoning-text').textContent=message.reasoningSummary||'';}
+    if(view.reasoning){const elapsed=message.thinkingSeconds??((performance.now()-(message.startedAt||performance.now()))/1000);view.reasoning.querySelector('summary').textContent=`${message.thinkingSeconds==null?t('思考中'):t('已思考')} · ${Number(elapsed).toFixed(1)}s`;view.reasoning.classList.toggle('thinking-active',message.thinkingSeconds==null&&Boolean(message.startedAt));const summary=message.reasoningSummary||'';if(view.reasoningKey!==summary){renderMarkdown(view.reasoning.querySelector('.reasoning-text'),summary);view.reasoningKey=summary;}}
     if(view.timing)view.timing.textContent=message.revealing?`${t("正在回复…")} ${((performance.now()-(message.startedAt||performance.now()))/1000).toFixed(1)}s`:message.seconds==='realtime'?t("实时"):message.seconds?`${message.seconds}s`:'';
     if (view.check) view.check.disabled = busy;
     if (messages.children[index] !== view.row) messages.insertBefore(view.row, messages.children[index] || null);
@@ -202,12 +256,12 @@ function render({toBottom = false} = {}) {
   while (messages.children.length > index) messages.lastElementChild.remove();
   renderedChat = current;
   $('exportChat').disabled = !current.messages.length || busy;
-  if (follow) pane.scrollTop = pane.scrollHeight;
+  if (follow) pane.scrollTop = current.messages.length ? pane.scrollHeight : 0;
   if(typeof scheduleHistorySave==='function')scheduleHistorySave();
 }
 function setBusy(value, toBottom = false) {
   busy = value; $('busyStatus').hidden = !value; $('messages').setAttribute('aria-busy',String(value));
-  for (const id of ['provider','model','apiKey','newChat','prompt','undoDelete','task','effort','browseModels','modelDetails','modelSettings','modelSearch','inputFile','documents','question']) $(id).disabled = value;
+  for (const id of ['provider','model','apiKey','newChat','prompt','undoDelete','task','effort','browseModels','modelDetails','modelSettings','modelSearch','modelDirection','inputFile','documents','question']) $(id).disabled = value;
   document.querySelectorAll('.prompt-card').forEach(b => b.disabled = value);
   if(!value) $('effort').disabled=!selectedModel()?.reasoning.length;
   updateConnection(); if(typeof refreshConnectionSummary==='function')refreshConnectionSummary(); render({toBottom});
@@ -232,7 +286,7 @@ $('chatForm').addEventListener('submit', async event => {
   const options={};
   if (!current.messages.length) current.title = text.slice(0, 20);
   const userMessage={role:'user',content:text,images:task==='chat'?files:[],imageCount:task==='chat'?files.length:0,fileIds:[],attachments:task==='chat'?[]:files};
-  const messages=[...current.messages,userMessage].filter(m=>!m.media?.length&&!m.jobId&&!(m.role==='assistant'&&!m.content)).map(({role,content,image,images})=>({role,content,...(image?{image}:{}),...(images?.length?{images}:{})}));
+  const messages=[...current.messages,userMessage].filter(m=>!m.media?.length&&!m.jobId&&!(m.role==='assistant'&&!m.content)).map(message=>outgoingHistoryMessage(message,p.id,model));
   let operation;
   try{
     operation=await StarProviderOperations.prepare('run',{provider:p.id,model,task,stream:task==='chat',effort:$('effort').value,prompt:text,options,parameters,files:task==='image'?files:undefined,voice:$('voice')?.value||'',file:['chat','image'].includes(task)?'':file||'',fileFormat:$('inputFile').files[0]?.name.split('.').pop().toLowerCase(),documents:$('documents').value.split('\n').filter(s=>s.trim()),question:$('question').value,apiKey:requestApiKey,expectedEmail:requestAccount,timeZone:Intl.DateTimeFormat().resolvedOptions().timeZone||'UTC',webSearch:task==='chat'&&!$('webSearch').disabled&&$('webSearch').checked,messages});
@@ -242,7 +296,6 @@ $('chatForm').addEventListener('submit', async event => {
   }catch(error){if(operation)StarProviderOperations.discardUnsent(operation);setBusy(false);showError(error.message);return;}
   StarStore.savePending(null);
   requestChat.messages.push(userMessage);
-  if(accountEmail)saveCloudChats().catch(()=>{});
   const answer={role:'assistant',content:'',provider:p.id,providerName:p.name,model,providerOperationId:operation.id,incomplete:true,startedAt:performance.now()};
   requestChat.messages.push(answer);
   $('prompt').value='';showError('');setBusy(true,true);$('busyStatus').textContent=t("正在连接模型，回复将逐步显示…");
@@ -274,8 +327,9 @@ $('chatForm').addEventListener('submit', async event => {
     requireRequestOwner();
     StarProviderOperations.observe(operation.id,result);
     if(!answer.content)throw new Error(t("模型没有返回文本。"));
+    const providerContext=validatedProviderContext(result.providerContext,p.id,model);if(providerContext&&result.continuationUnavailable!==true)answer.providerContext=providerContext;if(p.id==='moonshot'&&result.continuationUnavailable===true)answer.continuationUnavailable=true;
     invalidateGeneratedPreviews();releaseGeneratedMessage(answer);
-    Object.assign(answer,{media:result.media,mediaRefs:StarProviderMedia.references(result.media),details:result.details,jobId:result.jobId,status:result.status,warning:[result.warning,result.durability==='single'?'Degraded mode: this result currently has one active copy.':''].filter(Boolean).join(' '),imageSaveFailed:Boolean(result.imageSaveFailed)});
+    Object.assign(answer,{media:result.media,mediaRefs:StarProviderMedia.references(result.media),details:result.details,jobId:result.jobId,status:result.status,warning:result.warning||'',imageSaveFailed:Boolean(result.imageSaveFailed)});
     $('busyStatus').textContent=t("正在显示回复…");await reveal.finish();requireRequestOwner();
     answer.incomplete=false;answer.seconds=((performance.now()-started)/1000).toFixed(1);$('inputFile').value='';StarStore.savePending(null);
     await persistProviderHistory(requestAccount,requestChat.id);requireRequestOwner();
@@ -302,7 +356,7 @@ document.addEventListener('starhub:provider-result',async event=>{
   const chat=chats.find(chat=>chat.messages.some(message=>message.providerOperationId===value.operationId));if(!chat)return;
   const answer=chat.messages.find(message=>message.providerOperationId===value.operationId),email=accountEmail,resultEpoch=accountIdentityRevision;
   function requireResultOwner(){if(accountEmail!==email||accountIdentityRevision!==resultEpoch)throw Error('The original result account changed. Its request identity is retained.');}
-  const result=value.result;invalidateGeneratedPreviews();releaseGeneratedMessage(answer);Object.assign(answer,{content:result.text||answer.content,incomplete:false,media:result.media,mediaRefs:StarProviderMedia.references(result.media),details:result.details,jobId:result.jobId,status:result.status,warning:[result.warning||result.error,value.durability==='single'?'Degraded mode: this result currently has one active copy.':''].filter(Boolean).join(' '),imageSaveFailed:Boolean(result.imageSaveFailed)});
+  const result=value.result;const providerContext=validatedProviderContext(result.providerContext,answer.provider,answer.model);if(providerContext&&result.continuationUnavailable!==true)answer.providerContext=providerContext;if(answer.provider==='moonshot'&&result.continuationUnavailable===true)answer.continuationUnavailable=true;invalidateGeneratedPreviews();releaseGeneratedMessage(answer);Object.assign(answer,{content:result.text||answer.content,incomplete:false,media:result.media,mediaRefs:StarProviderMedia.references(result.media),details:result.details,jobId:result.jobId,status:result.status,warning:result.warning||result.error||'',imageSaveFailed:Boolean(result.imageSaveFailed)});
   queueRender();try{await persistProviderHistory(email,chat.id);requireResultOwner();if(current===chat)await displayGeneratedPreview(answer,chat,email);requireResultOwner();if(!answer.imageSaveFailed){StarProviderOperations.acknowledge(value.operationId);providerRetries.delete(value.operationId);}}catch(error){showError(error.message);}
 });
 $('prompt').addEventListener('keydown', event => { if (event.key === 'Enter' && !event.shiftKey && !event.isComposing) { event.preventDefault(); $('chatForm').requestSubmit(); } });
@@ -315,9 +369,10 @@ $('undoDelete').addEventListener('click', () => {
 });
 document.addEventListener('keydown', event => { if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'k') { event.preventDefault(); newChat(); } });
 $('provider').addEventListener('change', () => { $('modelSearch').value=''; selectProvider(); });
-$('model').addEventListener('change', configureModel);
+$('model').addEventListener('change', () => { rememberModelChoice(selectedModel()); configureModel(); });
 $('task').addEventListener('change',configureTask);
 $('modelSearch').addEventListener('input',()=>selectProvider());
+$('modelDirection').addEventListener('change',()=>{$('modelSearch').value='';selectProvider();});
 $('apiKey').addEventListener('input', saveSettings);
 $('toggleKey').addEventListener('click', () => { const show = $('apiKey').type === 'password'; $('apiKey').type = show ? 'text' : 'password'; $('toggleKey').textContent = show ? t("隐藏") : t("显示"); $('toggleKey').setAttribute('aria-label', show ? t("隐藏 API Key") : t("显示 API Key")); $('toggleKey').setAttribute('aria-pressed', String(show)); });
 $('menuToggle').addEventListener('click', () => { const open = $('sidebar').classList.toggle('open'); $('menuToggle').setAttribute('aria-expanded', String(open)); });
@@ -329,15 +384,18 @@ $('exportChat').addEventListener('click', () => {
 });
 async function init() {
   await new Promise(resolve=>document.addEventListener("DOMContentLoaded",resolve,{once:true}));
-  await restoreAccount();
-  await StarStore.initGuest();if(!accountEmail)for(const [provider,key] of StarStore.loadKeys())keys.set(provider,key);
+  const catalogRequest=fetch('api/catalog').then(async response=>{if(!response.ok)throw new Error(t("无法加载服务商，请刷新页面重试。"));return response.json();}).then(data=>({data}),error=>({error}));
+  await restoreAccount(true);
+  const guestInitialization=StarStore.initGuest();
+  if(!accountEmail){await guestInitialization;for(const [provider,key] of StarStore.loadKeys())keys.set(provider,key);}
   let cloudLoaded=false;if(accountEmail){try{cloudLoaded=await initCloudSession();}catch(error){showError(error.message);return;}}
   const restored=cloudLoaded?null:StarStore.loadHistory();
   if(cloudLoaded){}else if(restored){chats=restored.chats;current=undefined;activateChat(chats.find(c=>c.id===restored.currentId)||chats[0]);}else newChat();
   try {
-    const response = await fetch('api/catalog'); if (!response.ok) throw new Error(t("无法加载服务商，请刷新页面重试。"));
-    rawCatalog = await response.json(); catalog=localizedCatalog(rawCatalog); providers=catalog.providers; setupLibrary(); $('provider').replaceChildren(...providers.map(p => new Option(p.name, p.id)));
-    ready = true; $('provider').disabled = false; $('browseModels').disabled=false; if(providers.some(p=>p.id===restoredSelection.provider))$('provider').value=restoredSelection.provider;selectProvider();
+    const catalogResult=await catalogRequest;if(catalogResult.error)throw catalogResult.error;
+    rawCatalog = catalogResult.data; catalog=localizedCatalog(rawCatalog); providers=catalog.providers; updateAvailableDirections(); setupLibrary(); $('provider').replaceChildren(...providers.map(p => new Option(p.name, p.id)));
+    if(!await guestInitialization)throw Error('Guest session hydration is unconfirmed. Keep the original request identity.');
+    ready = true; $('provider').disabled = false; $('browseModels').disabled=false; if(providers.some(p=>p.id===restoredSelection.provider))$('provider').value=restoredSelection.provider;selectProvider(settings.get($('provider').value));
     $('serviceStatus').classList.add('online'); $('serviceStatus').lastChild.textContent = t(" 服务已就绪");
     document.dispatchEvent(new CustomEvent('starhub:ready'));
     if (publicInsecure) showError(t("请通过 https://starhub.zhongjiehuang.com 访问后填写密钥。"));
@@ -346,30 +404,46 @@ async function init() {
 init();
 function element(tag,text,className){const e=document.createElement(tag);if(text!==undefined)e.textContent=['pre','code'].includes(tag)?text:uiText(text);if(className)e.className=className;return e;}
 function setupLibrary(){
-  $('catalogCount').textContent=t("{0} 项",catalog.models.length.toLocaleString());
-  $('libraryStats').textContent=t("{0} 个接入项 · {1} 个厂商 / 来源 · {2} 类能力 · 更新 {3}",catalog.models.length.toLocaleString(),new Set(catalog.models.map(m=>m.vendor)).size,Object.keys(catalog.categories).length,catalog.updatedAt);
+  $('catalogCount').textContent=language==='zh'?'旗舰精选':'Flagship picks';
+  const availableDirections=['general','image','video','voice'].filter(direction=>directionModels(direction).length).length;
+  $('libraryStats').textContent=t("{0} 家服务商 · {1} 个创作方向 · 批处理",providers.length,availableDirections);
   $('keylessNotice').textContent=catalog.noKeyNotice;$('coverageNotice').textContent=catalog.coverage;
   const populate=(id,entries,all)=>$(id).replaceChildren(new Option(all,''),...entries.map(([v,n])=>new Option(n,v)));
-  const vendors=new Map(catalog.models.map(m=>[m.vendor,m.vendorName]));
+  const visibleModels=catalog.models.filter(m=>primaryDirection(m));
+  const vendors=new Map(visibleModels.map(m=>[m.vendor,m.vendorName]));
   populate('filterVendor',[...vendors].sort((a,b)=>a[1].localeCompare(b[1],'zh')),t("全部厂商 / 来源"));
-  populate('filterCategory',Object.entries(catalog.categories),t("全部能力"));
-  populate('filterSpecialty',[...new Set(catalog.models.flatMap(m=>m.subcategories))].sort().map(v=>[v,v]),t("全部细分用途"));
+  updateCapabilityFilter();
+  populate('filterSpecialty',[...new Set(visibleModels.flatMap(m=>m.subcategories))].sort().map(v=>[v,v]),t("全部细分用途"));
   const inputNames={text:t("文本"),image:t("图片"),video:t("视频"),audio:t("音频"),file:t("文件")};
-  populate('filterInput',[...new Set(catalog.models.flatMap(m=>m.inputs))].sort().map(v=>[v,inputNames[v]||v]),t("全部输入类型"));
+  populate('filterInput',[...new Set(visibleModels.flatMap(m=>m.inputs))].sort().map(v=>[v,inputNames[v]||v]),t("全部输入类型"));
   populate('filterProvider',providers.map(p=>[p.id,p.name]),t("全部官方厂商"));
   updateFamilies();
-  const efforts=[...new Set(catalog.models.flatMap(m=>m.reasoning))];
+  const efforts=[...new Set(visibleModels.flatMap(m=>m.reasoning))];
   $('filterReasoning').append(...efforts.map(e=>new Option(t("支持 {0} ({1})",uiText(effortNames[e])||e,e),e)));
+}
+function updateCapabilityFilter(){
+  const control=$('filterCategory'), prior=control.value, vendor=$('filterVendor').value,provider=$('filterProvider').value;
+  const used=new Set(directionModels($('libraryDirection').value).filter(m=>(!vendor||m.vendor===vendor)&&(!provider||m.provider===provider)).flatMap(m=>m.categories));
+  control.replaceChildren(new Option(t('全部能力'),''),...Object.entries(catalog.categories).filter(([key])=>key!=='embeddings'&&used.has(key)).map(([key,label])=>new Option(label,key)));
+  if([...control.options].some(option=>option.value===prior))control.value=prior;
 }
 function updateFamilies(){
   const prior=$('filterFamily').value;const vendor=$('filterVendor').value;
-  const families=[...new Set(catalog.models.filter(m=>!vendor||m.vendor===vendor).map(m=>m.family))].sort();
+  const families=[...new Set(catalog.models.filter(m=>primaryDirection(m)&&(!vendor||m.vendor===vendor)).map(m=>m.family))].sort();
   $('filterFamily').replaceChildren(new Option(t("全部系列"),''),...families.map(f=>new Option(f,f)));
   if(families.includes(prior))$('filterFamily').value=prior;
 }
 function filteredModels(){
   const q=$('librarySearch').value.toLowerCase().trim(),v=$('filterVendor').value,c=$('filterCategory').value,f=$('filterFamily').value,p=$('filterProvider').value,cost=$('filterCost').value,reason=$('filterReasoning').value;
-  return catalog.models.filter(m=>(!$('filterExecution').value||($('filterExecution').value==='batch'?m.batch:$('filterExecution').value==='realtime'?m.categories.includes('realtime'):m.execution===$('filterExecution').value))&&(!$('filterSpecialty').value||m.subcategories.includes($('filterSpecialty').value))&&(!$('filterInput').value||m.inputs.includes($('filterInput').value))&&(!q||`${m.name} ${m.id} ${m.vendorName} ${m.family} ${m.description} ${m.tags.join(' ')}`.toLowerCase().includes(q))&&(!v||m.vendor===v)&&(!c||m.categories.includes(c))&&(!f||m.family===f)&&(!p||m.provider===p)&&(!cost||(cost==='keyless'?!m.requiresKey:m.cost===cost))&&(!reason||(reason==='adjustable'?m.reasoning.length:reason==='reasoning'?m.reasoningKnown:reason==='none'?!m.reasoningKnown:m.reasoning.includes(reason))));
+  return directionModels($('libraryDirection').value).filter(m=>(!$('filterExecution').value||($('filterExecution').value==='batch'?m.batch:$('filterExecution').value==='realtime'?m.categories.includes('realtime'):m.execution===$('filterExecution').value))&&(!$('filterSpecialty').value||m.subcategories.includes($('filterSpecialty').value))&&(!$('filterInput').value||m.inputs.includes($('filterInput').value))&&(!q||`${m.name} ${m.id} ${m.vendorName} ${m.family} ${m.description} ${m.tags.join(' ')}`.toLowerCase().includes(q))&&(!v||m.vendor===v)&&(!c||m.categories.includes(c))&&(!f||m.family===f)&&(!p||m.provider===p)&&(!cost||(cost==='keyless'?!m.requiresKey:m.cost===cost))&&(!reason||(reason==='adjustable'?m.reasoning.length:reason==='reasoning'?m.reasoningKnown:reason==='none'?!m.reasoningKnown:m.reasoning.includes(reason))));
+}
+function libraryEmptyMessage(){
+  const direction=$('libraryDirection').value;
+  if(direction==='video')return t('视频生成暂未接入；视频理解不等于视频生成。');
+  const vendor=$('filterVendor').value,provider=$('filterProvider').value;
+  const available=directionModels(direction).some(m=>(!vendor||m.vendor===vendor)&&(!provider||m.provider===provider));
+  if(!available)return t('所选厂商在此方向暂无已接入模型。可选择其他厂商或查看更多工具。');
+  return $('filterCost').value==='keyless'?catalog.noKeyNotice:t('没有匹配的模型，试试减少筛选条件。');
 }
 function renderLibrary(){
   const models=filteredModels(),pages=Math.max(1,Math.ceil(models.length/24));libraryPage=Math.min(libraryPage,pages-1);
@@ -377,14 +451,15 @@ function renderLibrary(){
   $('modelCards').replaceChildren();
   for(const m of models.slice(libraryPage*24,libraryPage*24+24)){
     const card=element('article',undefined,'model-card');
-    card.append(element('div',`${m.vendorName} / ${m.family}`,'model-kicker'),element('h3',m.name),element('code',m.id),element('p',m.description,'model-intro'));
+    card.append(element('div',`${m.vendorName} / ${m.family}`,'model-kicker'),element('h3',m.name),element('p',m.description,'model-intro'));
     const badges=element('div',undefined,'model-tags');for(const c of m.categories)badges.append(element('span',catalog.categories[c]||c));
     badges.append(element('span',uiText(costNames[m.cost]),m.cost==='free-key'?'free-badge':''));if(['down','degraded'].includes(m.status))badges.append(element('span',m.status==='down'?t("平台报告故障"):t("平台报告降级")));if(m.batch)badges.append(element('span',t("异步批处理")));if(m.categories.includes('realtime'))badges.append(element('span',t("实时连接")));
+    if(modelTierLabel(m))badges.append(element('span',modelTierLabel(m)));
     if(m.accessLabel)badges.append(element('span',m.accessLabel,'restricted-badge'));
     card.append(badges,element('p',`${m.providerName} · ${m.reasoning.length ? t("推理 ")+m.reasoning.map(e=>uiText(effortNames[e])||e).join(' / '):m.reasoningKnown?t("推理：平台默认"):t("未公开推理档位")}`,'model-route'));
     const actions=element('div',undefined,'model-actions');const details=element('button',t("介绍与费用"));details.addEventListener('click',()=>showDetails(m));const use=element('button',m.execution==='external'?t("查看接入说明"):t("选择此模型"));use.addEventListener('click',()=>m.execution==='external'?showDetails(m):chooseModel(m));actions.append(details,use);card.append(actions);$('modelCards').append(card);
   }
-  if(!models.length)$('modelCards').append(element('p',$('filterCost').value==='keyless'?catalog.noKeyNotice:t("没有匹配的模型，试试减少筛选条件。"),'empty-models'));
+  if(!models.length)$('modelCards').append(element('p',libraryEmptyMessage(),'empty-models'));
 }
 function showDetails(m){
   detailModel=m;$('detailTitle').textContent=m.name;const root=$('detailContent');root.replaceChildren(element('p',m.description,'detail-intro'));
@@ -402,15 +477,15 @@ function showDetails(m){
 }
 function chooseModel(m){
   if(busy)return;
-  $('modelSearch').value='';$('provider').value=m.provider;selectProvider(m.id);
+  $('modelSearch').value='';$('provider').value=m.provider;rememberModelChoice(m);selectProvider(m.id);
   $('detailDialog').close();$('modelLibrary').close();$('sidebar').classList.add('open');$('menuToggle').setAttribute('aria-expanded','true');$('connectionSettings').open=true;$('apiKey').focus();
 }
 
 $('browseModels').addEventListener('click',()=>{renderLibrary();$('modelLibrary').showModal();});
 $('closeLibrary').addEventListener('click',()=>$('modelLibrary').close());$('closeDetails').addEventListener('click',()=>$('detailDialog').close());
 $('modelDetails').addEventListener('click',()=>{const m=selectedModel();if(m)showDetails(m);});$('useDetailModel').addEventListener('click',()=>chooseModel(detailModel));
-for(const id of ['librarySearch','filterVendor','filterCategory','filterSpecialty','filterInput','filterFamily','filterProvider','filterReasoning','filterCost','filterExecution'])$(id).addEventListener(id==='librarySearch'?'input':'change',()=>{libraryPage=0;if(id==='filterVendor')updateFamilies();renderLibrary();});
-$('resetFilters').addEventListener('click',()=>{for(const id of ['librarySearch','filterVendor','filterCategory','filterSpecialty','filterInput','filterFamily','filterProvider','filterReasoning','filterCost','filterExecution'])$(id).value='';updateFamilies();libraryPage=0;renderLibrary();});
+for(const id of ['libraryDirection','librarySearch','filterVendor','filterCategory','filterSpecialty','filterInput','filterFamily','filterProvider','filterReasoning','filterCost','filterExecution'])$(id).addEventListener(id==='librarySearch'?'input':'change',()=>{libraryPage=0;if(id==='filterVendor')updateFamilies();if(['libraryDirection','filterVendor','filterProvider'].includes(id))updateCapabilityFilter();renderLibrary();});
+$('resetFilters').addEventListener('click',()=>{for(const id of ['libraryDirection','librarySearch','filterVendor','filterCategory','filterSpecialty','filterInput','filterFamily','filterProvider','filterReasoning','filterCost','filterExecution'])$(id).value='';$('libraryDirection').value='general';updateFamilies();updateCapabilityFilter();libraryPage=0;renderLibrary();});
 $('prevPage').addEventListener('click',()=>{libraryPage--;renderLibrary();$('modelCards').scrollIntoView({block:'start'});});$('nextPage').addEventListener('click',()=>{libraryPage++;renderLibrary();$('modelCards').scrollIntoView({block:'start'});});
 function readFileData(file){
   if(!file)return Promise.resolve('');if(file.size>4*1024*1024)return Promise.reject(new Error(t("单个文件最多 4 MB。")));
@@ -443,7 +518,7 @@ function renderPricing(root,m){
   }
 }
 
-function modalityName(v){return ({text:t("文本"),image:t("图片"),video:t("视频"),audio:t("音频"),file:t("文件"),speech:t("语音"),transcription:t("转写文本"),embeddings:t("向量"),embedding:t("向量"),rerank:t("相关性排序"),decisions:t("结构化决策"),'3d':t("3D 资产")})[v]||v;}
+function modalityName(v){return ({text:t("文本"),image:t("图片"),video:t("视频"),audio:t("音频"),file:t("文件"),speech:t("语音"),transcription:t("转写文本"),rerank:t("相关性排序"),decisions:t("结构化决策"),'3d':t("3D 资产")})[v]||v;}
 
 document.addEventListener("starhub:languagechanged",()=>{if(selectedModel())refreshSearchControls();});
 

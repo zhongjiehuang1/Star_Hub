@@ -7,6 +7,16 @@ function fixture(){const values=new Map(),calls=[];let state={operationState:'SE
 test('unknown retry preserves identity without storing prompts or credentials or dispatching twice',async()=>{const f=fixture(),body={prompt:'private-prompt-value',apiKey:'private-key-value',task:'image'};
  await assert.rejects(f.api.request('run',body));const first=f.calls[0].body;assert.equal(first.operationId,first.storageOperationId);assert.equal(first.ownerTab,'a'.repeat(32));const stored=[...f.values.values()].join();assert.ok(!stored.includes(body.prompt));assert.ok(!stored.includes(body.apiKey));await assert.rejects(f.api.request('run',body),e=>e.operationId===first.operationId);assert.equal(f.calls.filter(v=>v.url==='api/run').length,1);
 });
+test('opaque model context changes request fingerprint without storing it or replaying unknown operations',async()=>{
+ const f=fixture(),message={role:'assistant',provider:'moonshot',model:'kimi-k3',content:'answer',providerContext:{provider:'moonshot',model:'kimi-k3',token:'opaqueTOKEN_A_123'}};
+ const original=await f.api.prepare('run',{task:'chat',messages:[message]});const first=f.api.records()[0];f.api.markUnknown(original.id);
+ const same=await f.api.prepare('run',{task:'chat',messages:[message]});assert.equal(same.id,original.id);
+ await assert.rejects(f.api.prepare('run',{task:'chat',messages:[{...message,providerContext:{...message.providerContext,token:'opaqueTOKEN_B_456'}}]}),/earlier request is unconfirmed/);
+ assert.equal(f.calls.length,0);assert.ok(!JSON.stringify([...f.values.values()]).includes('opaqueTOKEN'));
+ f.api.separate(original.id);const changed=await f.api.prepare('run',{task:'chat',messages:[{...message,providerContext:{...message.providerContext,token:'opaqueTOKEN_B_456'}}]});
+ assert.notEqual(changed.id,original.id);assert.notEqual(f.api.records().find(x=>x.id===changed.id).fingerprint,first.fingerprint);
+ assert.ok(!JSON.stringify([...f.values.values()]).includes('opaqueTOKEN'));
+});
 test('confirmed original result replays without provider dispatch and requires terminal observation before retirement',async()=>{const f=fixture(),body={prompt:'synthetic question',apiKey:'synthetic credential'};await assert.rejects(f.api.request('run',body));const id=f.calls[0].body.operationId;assert.equal(f.api.acknowledge(id),false);f.state({operationState:'COMPLETED',httpStatus:200,result:{text:'saved answer'},durability:'dual'});const {response,operationId}=await f.api.request('run',body),answer=await response.json();assert.equal(operationId,id);assert.equal(answer.text,'saved answer');assert.equal(f.calls.filter(v=>v.url==='api/run').length,1);f.api.observe(id,answer);assert.equal(f.api.acknowledge(id),true);assert.equal(f.api.records().length,0);});
 test('changed intent requires explicit separation while preserving the original unknown request',async()=>{const f=fixture();await assert.rejects(f.api.request('run',{prompt:'first'}));const old=f.api.records()[0].id;await assert.rejects(f.api.prepare('run',{prompt:'changed'}));f.api.separate(old);const next=await f.api.prepare('run',{prompt:'changed'});assert.notEqual(next.id,old);assert.equal(f.api.records().length,2);f.api.observe(old,{operationId:old,operationState:'COMPLETED',durability:'dual'});f.api.acknowledge(old);assert.equal(f.api.records()[0].id,next.id);});
 test('missing or mismatched terminal proof cannot retire an unknown request',async()=>{const f=fixture(),p=await f.api.prepare('run',{prompt:'first'});assert.throws(()=>f.api.observe(p.id,{operationId:webcrypto.randomUUID(),operationState:'COMPLETED'}));assert.equal(f.api.acknowledge(p.id),false);f.api.markUnknown(p.id);assert.equal(f.api.records()[0].state,'UNKNOWN');});
@@ -91,7 +101,7 @@ async function browserFixture(){
  const handlers=new Map(),dispatched=[],panel={children:[],hidden:true,replaceChildren(){this.children=[];},append(...children){this.children.push(...children);}};
  let hold=null,entered=null;
  const context={console,TextEncoder,Response,AbortSignal,queueMicrotask,CustomEvent:class{constructor(type,options){this.type=type;this.detail=options?.detail;}},
-  accountEmail:'first@example.test',accountIdentityRevision:0,StarStore:{providerTab:()=>context.ownerTab},ownerTab:'a'.repeat(32),
+  accountEmail:'first@example.test',accountIdentityRevision:0,StarStore:{providerTab:()=>context.ownerTab,whenSettled:async()=>{}},ownerTab:'a'.repeat(32),
   sessionStorage:{getItem:key=>seeded.values.get(key)||null,setItem:(key,value)=>seeded.values.set(key,value)},
   crypto:{randomUUID:()=>webcrypto.randomUUID(),subtle:{digest:async(...args)=>{const bytes=await webcrypto.subtle.digest(...args);if(hold){const wait=hold;entered?.resolve();await wait.promise;}return bytes;}}},
   fetch:async()=>{throw Error('No browser network is permitted in this test');},
@@ -113,4 +123,44 @@ test('account change clears pending DOM synchronously and a stale awaited render
 test('ready event renders original pending identities after the tab session initializes',async()=>{
  const f=await browserFixture();f.context.ownerTab='';await f.handlers.get('DOMContentLoaded')();assert.equal(f.panel.hidden,true);
  f.context.ownerTab='a'.repeat(32);await f.handlers.get('starhub:ready')();assert.equal(f.panel.hidden,false);assert.ok(f.panel.children.length>0);
+});
+test('batch and realtime preparation wait settlement and reject same-account ABA after that wait',async()=>{
+ for(const kind of ['batch-submit','realtime']){
+  const wait=deferred(),rows=new Map();let epoch=0,calls=0;const api=create({storage:{getItem:k=>rows.get(k)||null,setItem:(k,v)=>rows.set(k,v)},crypto:webcrypto,actor:()=> 'owner@example.test',actorEpoch:()=>epoch,tab:()=> 'a'.repeat(32),settle:()=>wait.promise,fetch:async()=>{calls++;}});
+  const pending=api.prepare(kind,{prompt:'original'});assert.equal(rows.size,0);epoch++;wait.resolve();await assert.rejects(pending,e=>e.code==='ACTOR_CHANGED');assert.equal(rows.size,0);assert.equal(calls,0);
+ }
+});
+test('paid dispatch rechecks settlement after preparation, while original result queries remain available',async()=>{
+ const rows=new Map(),calls=[];let fail=false;const api=create({storage:{getItem:k=>rows.get(k)||null,setItem:(k,v)=>rows.set(k,v)},crypto:webcrypto,actor:()=>'',tab:()=> 'a'.repeat(32),settle:async()=>{if(fail)throw Error('guest write unconfirmed');},fetch:async(url,options)=>{calls.push(url);const body=JSON.parse(options.body);return {ok:true,json:async()=>({operationId:body.operationId,operationState:'SENT'})};}});
+ const op=await api.prepare('batch-submit',{inputs:['synthetic']});fail=true;await assert.rejects(api.requestPrepared(op),/guest write/);assert.equal(calls.length,0);assert.equal(api.records()[0].id,op.id);await api.query(op.id);assert.deepEqual(calls,['api/provider-operation']);
+ await api.request('batch-get',{jobId:'synthetic'},{readOnly:true,endpoint:'batch'});assert.equal(calls[1],'api/batch');
+});
+test('prepared dispatch rejects an owner change while settlement is pending without sending',async()=>{
+ const rows=new Map(),wait=deferred();let gate=false,epoch=0,calls=0;const api=create({storage:{getItem:k=>rows.get(k)||null,setItem:(k,v)=>rows.set(k,v)},crypto:webcrypto,actor:()=>'',actorEpoch:()=>epoch,tab:()=> 'a'.repeat(32),settle:()=>gate?wait.promise:Promise.resolve(),fetch:async()=>{calls++;}});
+ const operation=await api.prepare('run',{prompt:'synthetic'});gate=true;const pending=api.requestPrepared(operation);await new Promise(done=>setImmediate(done));epoch++;wait.resolve();await assert.rejects(pending,e=>e.code==='ACTOR_CHANGED');assert.equal(calls,0);assert.equal(api.records()[0].id,operation.id);
+});
+test('realtime final dispatch gate waits settlement and preserves immutable actor ownership',async()=>{
+ const values=new Map(),wait=deferred();let block=false,epoch=0;
+ const api=create({storage:{getItem:k=>values.get(k)||null,setItem:(k,v)=>values.set(k,v)},crypto:webcrypto,actor:()=>'',actorEpoch:()=>epoch,tab:()=> 'a'.repeat(32),settle:()=>block?wait.promise:Promise.resolve(),fetch:async()=>{throw Error('no paid calls');}});
+ const operation=await api.prepare('realtime',{model:'synthetic'});block=true;const opening=api.beforeDispatch(operation);epoch++;wait.resolve();await assert.rejects(opening,e=>e.code==='ACTOR_CHANGED');assert.equal(operation.fresh,true);assert.equal(api.records()[0].id,operation.id);
+ const advanced=fs.readFileSync(path.join(__dirname,'../../main/webapp/advanced.js'),'utf8');assert.match(advanced,/socket\.onopen=async\(\)=>\{try\{await StarProviderOperations\.beforeDispatch\(operation\)/);
+});
+
+test('a live request is not presented as unconfirmed, but remains recorded and is revealed on uncertainty',async()=>{
+ const f=await browserFixture();f.seeded.values.clear();
+ const op=await f.context.StarProviderOperations.prepare('run',{prompt:'synthetic input'});
+ await new Promise(resolve=>setTimeout(resolve,0));
+ assert.equal(f.panel.hidden,true);assert.equal(f.context.StarProviderOperations.records().length,1);
+ f.context.StarProviderOperations.markUnknown(op.id);
+ await new Promise(resolve=>setTimeout(resolve,0));
+ assert.equal(f.panel.hidden,false);assert.equal(f.context.StarProviderOperations.records()[0].state,'UNKNOWN');
+});
+test('completed operation becomes recoverable if its result cannot yet be saved',async()=>{
+ const f=await browserFixture();f.seeded.values.clear();
+ const op=await f.context.StarProviderOperations.prepare('run',{prompt:'synthetic input'});
+ f.context.StarProviderOperations.observe(op.id,{operationId:op.id,operationState:'COMPLETED',durability:'single'});
+ await new Promise(resolve=>setTimeout(resolve,0));
+ assert.equal(f.panel.hidden,false);assert.equal(f.context.StarProviderOperations.records()[0].state,'COMPLETED');
+ assert.equal(f.context.StarProviderOperations.acknowledge(op.id),true);
+ await new Promise(resolve=>setTimeout(resolve,0));assert.equal(f.panel.hidden,true);
 });

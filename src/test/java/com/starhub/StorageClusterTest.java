@@ -9,6 +9,11 @@ class StorageClusterTest {
         String url=AccountServlet.jdbcUrl(properties,"db.url");assertTrue(url.contains("sslMode=VERIFY_IDENTITY"));assertTrue(url.contains("autoReconnect=false"));assertTrue(url.contains("allowMultiQueries=false"));assertTrue(url.contains("socketTimeout=90000"));assertTrue(url.contains("connectionTimeZone=UTC"));assertTrue(url.contains("forceConnectionTimeZoneToSession=true"));assertFalse(url.contains("autoReconnect=true"));assertFalse(url.contains("Asia"));
         assertTrue(url.contains("useServerPrepStmts=true"));assertTrue(url.contains("cachePrepStmts=false"));assertFalse(url.contains("useServerPrepStmts=false"));assertFalse(url.contains("cachePrepStmts=true"));
     }
+    @Test void singleDatabasePoolEnforcesBoundedPreparedCacheAndDoesNotTrustUrlOverrides()throws Exception {
+        var p=SingleDatabaseTest.config();p.setProperty("storage.single.pool.enabled","true");p.setProperty("db.url",p.getProperty("db.url")+"&cachePrepStmts=false&prepStmtCacheSize=99999&prepStmtCacheSqlLimit=99999&autoReconnect=true&allowMultiQueries=true&holdResultsOpenOverStatementClose=true&dontTrackOpenResources=true");
+        String url=AccountServlet.jdbcUrl(p,"db.url");assertTrue(url.contains("useServerPrepStmts=true"));assertTrue(url.contains("cachePrepStmts=true"));assertTrue(url.contains("prepStmtCacheSize=64"));assertTrue(url.contains("prepStmtCacheSqlLimit=4096"));assertFalse(url.contains("99999"));assertFalse(url.contains("cachePrepStmts=false"));assertTrue(url.contains("autoReconnect=false"));assertTrue(url.contains("allowMultiQueries=false"));assertTrue(url.contains("holdResultsOpenOverStatementClose=false"));assertTrue(url.contains("dontTrackOpenResources=false"));assertFalse(url.contains("holdResultsOpenOverStatementClose=true"));assertFalse(url.contains("dontTrackOpenResources=true"));
+        p.setProperty("storage.single.pool.enabled","false");url=AccountServlet.jdbcUrl(p,"db.url");assertTrue(url.contains("cachePrepStmts=false"));assertFalse(url.contains("prepStmtCacheSize="));assertFalse(url.contains("99999"));
+    }
     @Test void replicatedDatabaseWaitRemainsBoundedAndLegacyWaitIsUnchanged(){
         var properties=new java.util.Properties();
         assertEquals(15_000,AccountServlet.databaseSocketTimeout(properties));

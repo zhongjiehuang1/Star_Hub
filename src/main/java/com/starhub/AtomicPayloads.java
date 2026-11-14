@@ -62,12 +62,23 @@ final class AtomicPayloads {
             afterChunk.verify(c);
             ChunkedPayloadStore.seal(c,plan);return;
         }
-        database.run(plan.operation(),c->{parent.verify(c);ChunkedPayloadStore.reserve(c,plan);return null;});
+        if(plan.chunkCount()==0){
+            database.run(plan.operation(),c->{parent.verify(c);ChunkedPayloadStore.reserve(c,plan);ChunkedPayloadStore.seal(c,plan);return null;});
+            return;
+        }
         for(int index=0;index<plan.chunkCount();index++){
             final int part=index;byte[] chunk=Arrays.copyOfRange(bytes,index*ChunkedPayloadStore.CHUNK_BYTES,(int)Math.min(bytes.length,(long)(index+1)*ChunkedPayloadStore.CHUNK_BYTES));
-            database.run(plan.operation(),c->{parent.verify(c);ChunkedPayloadStore.putChunk(c,plan,part,chunk);afterChunk.verify(c);return null;});
+            // A header and final READY transition are small metadata writes.
+            // Keep each independently confirmed transaction bounded to one
+            // immutable chunk; publication remains the caller's later commit.
+            database.run(plan.operation(),c->{
+                parent.verify(c);
+                if(part==0)ChunkedPayloadStore.reserve(c,plan);
+                ChunkedPayloadStore.putChunk(c,plan,part,chunk);afterChunk.verify(c);
+                if(part==plan.chunkCount()-1)ChunkedPayloadStore.seal(c,plan);
+                return null;
+            });
         }
-        database.run(plan.operation(),c->{parent.verify(c);ChunkedPayloadStore.seal(c,plan);return null;});
     }
     void cleanup(ChunkedPayloadStore.Plan plan,Parent parent,boolean retired)throws Exception {
         cleanup(plan,parent,retired,ignored->{});

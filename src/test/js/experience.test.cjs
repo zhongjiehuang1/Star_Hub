@@ -46,3 +46,50 @@ test('a terminal guest receipt for another transaction retains the original requ
  const f=fixture();await f.run('StarStore.initGuest()');f.run(`const beforeWrongTransaction=fetch;let swapOnce=true;globalThis.confirmationTx=[];fetch=async(url,options)=>{const q=JSON.parse(options.body),response=await beforeWrongTransaction(url,options);if(q.action==='commit'){confirmationTx.push(q.tx);if(swapOnce){swapOnce=false;const json=response.json;response.json=async()=>({...await json(),transactionId:'f'.repeat(32)});}}return response;};StarStore.saveKeys(new Map([['openai','synthetic-test-only-key']]));`);
  await assert.rejects(f.run('StarStore.flushConfirmed()'));assert.equal(await f.run('StarStore.flushConfirmed()'),true);const calls=JSON.parse(f.run('JSON.stringify(confirmationTx)'));assert.equal(calls.length,2);assert.equal(calls[0],calls[1]);
 });
+
+test('hydrated empty pending is a semantic no-op without guest writes',async()=>{
+ const f=fixture();await f.run('StarStore.initGuest()');f.run("globalThis.guestActions=[];const trackEmpty=fetch;fetch=async(u,o)=>{guestActions.push(JSON.parse(o.body).action);return trackEmpty(u,o)};StarStore.setGuestMode(false);StarStore.savePending(null);StarStore.savePending([])");
+ await f.run('StarStore.whenSettled()');assert.equal(f.run('guestActions.length'),0);
+});
+test('clearing real or in-flight pending is preserved and ordered before account work',async()=>{
+ const f=fixture();await f.run('StarStore.initGuest()');f.run("globalThis.guestActions=[];const trackPending=fetch;fetch=async(u,o)=>{guestActions.push(JSON.parse(o.body));return trackPending(u,o)};StarStore.savePending([{name:'synthetic.txt',type:'text/plain',data:'data:text/plain;base64,AQID'}])");
+ const first=f.run('StarStore.flush()');f.run('StarStore.setGuestMode(false);StarStore.savePending(null)');await first;await f.run('StarStore.whenSettled()');
+ const calls=JSON.parse(f.run('JSON.stringify(guestActions)'));assert.equal(calls.filter(q=>q.action==='commit').length,2);assert.notEqual(calls[0].tx,calls[3].tx);assert.equal(f.run('StarStore.loadPending().length'),0);
+ const reload=fixture({}, {data:f.data,session:f.session,server:f.server});await reload.run('StarStore.initGuest()');assert.equal(reload.run('StarStore.loadPending().length'),0);
+});
+test('guest initialization is joined once and a real attachment selected during hydration is not lost',async()=>{
+ const f=fixture();f.run("globalThis.getCount=0;const beforeBoot=fetch;fetch=async(u,o)=>{if(JSON.parse(o.body).action==='get'){getCount++;await new Promise(resolve=>globalThis.releaseBoot=resolve)}return beforeBoot(u,o)}");
+ const init=f.run('StarStore.initGuest()'),again=f.run('StarStore.initGuest()');assert.equal(init,again);
+ const settled=f.run('StarStore.whenSettled()');while(!f.run("typeof releaseBoot==='function'"))await new Promise(resolve=>setImmediate(resolve));f.run("StarStore.savePending([{name:'boot.txt',type:'text/plain',data:'data:text/plain;base64,AQID'}]);releaseBoot()");await Promise.all([init,settled]);
+ assert.equal(f.run('getCount'),1);assert.equal(f.run('StarStore.loadPending()[0].name'),'boot.txt');
+ const reload=fixture({}, {data:f.data,session:f.session,server:f.server});await reload.run('StarStore.initGuest()');assert.equal(reload.run('StarStore.loadPending()[0].name'),'boot.txt');
+});
+test('failed real pending retains its transaction for same-ID recovery rather than empty suppression',async()=>{
+ const f=fixture();await f.run('StarStore.initGuest()');f.run("const beforePendingFailure=fetch;globalThis.pendingCalls=[];let failPending=true;fetch=async(u,o)=>{const q=JSON.parse(o.body);pendingCalls.push(q);if(q.action==='commit'&&failPending){failPending=false;throw Error('synthetic unknown commit')}return beforePendingFailure(u,o)};StarStore.savePending([{name:'keep.txt',type:'text/plain',data:'data:text/plain;base64,AQID'}])");
+ await assert.rejects(f.run('StarStore.whenSettled()'));assert.equal(f.run('StarStore.loadPending()[0].name'),'keep.txt');await f.run('StarStore.whenSettled()');
+ const commits=JSON.parse(f.run("JSON.stringify(pendingCalls.filter(q=>q.action==='commit'))"));assert.equal(commits.length,2);assert.equal(commits[0].tx,commits[1].tx);
+});
+test('hydration failure blocks settlement and provider confirmation without silently retrying',async()=>{
+ const f=fixture();f.run("globalThis.guestGets=0;fetch=async()=>{guestGets++;throw Error('synthetic hydration failure')}");assert.equal(await f.run('StarStore.initGuest()'),false);await assert.rejects(f.run('StarStore.whenHydrated()'),/hydration/);await assert.rejects(f.run('StarStore.whenSettled()'),/hydration/);await assert.rejects(f.run('StarStore.flushConfirmed()'),/hydration/);assert.equal(f.run('guestGets'),1);
+});
+test('model selection preserves explicit choices by provider and direction without saving keys',()=>{
+ const f=fixture();f.run("StarStore.saveSelection('openai',new Map([['openai','gpt-6-astra']]),new Map([['openai|general','gpt-6-astra'],['openai|image','gpt-image-2.6-sunburst']]))");
+ assert.equal(f.run('StarStore.selection().directions["openai|general"]'),'gpt-6-astra');
+ assert.equal(f.run('StarStore.selection().directions["openai|image"]'),'gpt-image-2.6-sunburst');
+ assert(!f.data.get('starhub.v1.selection').includes('apiKey'));
+});
+test('a refused context save is visible and keeps the current conversation intact',()=>{
+ const source=fs.readFileSync(path.join(root,'experience.js'),'utf8');const chat={id:'synthetic',draft:'',messages:[{role:'assistant',content:'preserved'}]};const errors=[];
+ const ctx=vm.createContext({historySaveTimer:0,historySaveFailed:false,experienceReady:true,current:chat,chats:[chat],accountEmail:'',clearTimeout(){},$:()=>({value:'draft'}),t:x=>x,showError:value=>errors.push(value),StarStore:{saveHistory(){throw Error('Invalid model continuation. The conversation was not changed.')}}});
+ vm.runInContext(source.slice(source.indexOf('function persistHistory(){'),source.indexOf('function scheduleHistorySave(){')),ctx);vm.runInContext('persistHistory()',ctx);
+ assert.equal(chat.messages[0].content,'preserved');assert.match(errors[0],/conversation was not changed/);
+});
+
+test('malformed saved provider context is preserved and cannot be overwritten silently',async()=>{
+ const f=fixture();await f.run('StarStore.initGuest()');
+ const tab=[...f.server.values()][0], history={version:1,currentId:'a',chats:[{id:'a',title:'chat',messages:[{role:'assistant',provider:'moonshot',model:'kimi-k3',content:'answer',providerContext:{provider:'moonshot',model:'kimi-k3',token:'invalid='}}]}]};tab.values.history=structuredClone(history);
+ const reload=fixture({}, {data:f.data,session:f.session,server:f.server});await reload.run('StarStore.initGuest()');
+ assert.equal(reload.run('StarStore.loadHistory().chats[0].messages[0].providerContext.token'),'invalid=');
+ assert.throws(()=>reload.run("const old=StarStore.loadHistory(); StarStore.saveHistory(old.chats,old.currentId)"),/not changed/);
+ assert.deepEqual(tab.values.history,history);
+});

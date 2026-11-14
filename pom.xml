@@ -3,6 +3,7 @@
   <groupId>com.starhub</groupId><artifactId>starhub</artifactId><version>1.0.0</version><packaging>war</packaging>
   <properties><maven.compiler.release>17</maven.compiler.release><project.build.sourceEncoding>UTF-8</project.build.sourceEncoding></properties>
   <dependencies>
+    <dependency><groupId>com.zaxxer</groupId><artifactId>HikariCP</artifactId><version>6.3.0</version></dependency>
     <dependency><groupId>org.jboss.narayana.jta</groupId><artifactId>jta</artifactId><version>7.3.4.Final</version></dependency>
     <dependency><groupId>org.jboss</groupId><artifactId>jboss-transaction-spi</artifactId><version>8.0.0.Final</version></dependency>
     <dependency><groupId>org.jboss.logging</groupId><artifactId>jboss-logging</artifactId><version>3.6.1.Final</version></dependency>

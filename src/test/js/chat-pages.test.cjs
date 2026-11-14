@@ -24,3 +24,10 @@ test('an empty catalog is confirmed and an incomplete or oversized catalog is re
  await assert.rejects(collect(async()=>page([],1,null)),/ended early/);
  await assert.rejects(collect(async()=>page([],501,null)),/confirmed/);
 });
+test('a bundled first page is validated and consumed before requesting the next page',async()=>{
+ const requests=[];const value=await collect(async input=>{requests.push(input);return page([item(2)],2,null);},()=>true,page([item(1)],2,1));
+ assert.equal(value.chats.length,2);assert.equal(requests.length,1);assert.equal(requests[0].offset,1);assert.equal(requests[0].snapshot,snapshot);
+ const empty=await collect(()=>{throw Error('unnecessary network request');},()=>true,page([],0,null));assert.equal(empty.chats.length,0);
+ await assert.rejects(collect(()=>{throw Error('must validate bundle first');},()=>true,page([],0,null,{confirmedDurability:null})),/confirmed/);
+ await assert.rejects(collect(()=>{},()=>false,page([],0,null)),/account changed/);
+});

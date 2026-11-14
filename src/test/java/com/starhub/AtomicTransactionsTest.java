@@ -235,6 +235,34 @@ class AtomicTransactionsTest {
             }finally{if(previous==null)System.clearProperty("starhub.account.config");else System.setProperty("starhub.account.config",previous);Files.deleteIfExists(config);}
         }
     }
+    @Test void confirmedCommitThenCloseFailureNeverPublishesSuccessAndReplayIsSafe()throws Exception {
+        try(Fixture f=new Fixture()){
+            Path config=Files.createTempFile("starhub-atomic-synthetic-", ".properties");String previous=System.getProperty("starhub.account.config");
+            try{
+                try(OutputStream out=Files.newOutputStream(config)){f.p.store(out,"Synthetic");}System.setProperty("starhub.account.config",config.toString());
+                AtomicBoolean failClose=new AtomicBoolean(true),earlyOutput=new AtomicBoolean();AtomicReference<Capture> target=new AtomicReference<>();AtomicInteger executions=new AtomicInteger();String op=UUID.randomUUID().toString();
+                AtomicDatabase db=new AtomicDatabase(f.p,()->{
+                    Connection real=f.connection();return (Connection)Proxy.newProxyInstance(getClass().getClassLoader(),new Class<?>[]{Connection.class},(proxy,m,args)->{
+                        try{Object value=m.invoke(real,args);if(m.getName().equals("close")&&failClose.getAndSet(false)){if(target.get().bytes.size()!=0)earlyOutput.set(true);throw new SQLException("synthetic reset failure","08006");}return value;}
+                        catch(InvocationTargetException failure){throw failure.getCause();}
+                    });
+                },f.authority);
+                Capture failed=new Capture();target.set(failed);HttpServletRequest original=request(f,op);HttpSession originalSession=original.getSession(false);FilterChain work=(request,response)->{
+                    executions.incrementAndGet();try(Connection c=AccountServlet.db(f.p)){c.createStatement().executeUpdate("INSERT INTO business VALUES(9,'once')");}
+                    catch(SQLException e){throw new ServletException(e);}
+                    ((HttpServletRequest)request).getSession(false).setAttribute("fixture-marker","must wait");
+                    response.getOutputStream().write("{\"ok\":true}".getBytes(StandardCharsets.UTF_8));
+                };
+                AtomicHttp.run(original,failed.response,work,db,f.p,()->{},f.files::transientCapacity);
+                assertEquals(503,failed.status.get());assertFalse(failed.bytes.toString(StandardCharsets.UTF_8).contains("\"ok\":true"));assertFalse(earlyOutput.get());verify(originalSession,never()).setAttribute("fixture-marker","must wait");
+                assertTrue(failed.bytes.toString(StandardCharsets.UTF_8).contains(op));assertEquals(1,f.count("SELECT COUNT(*) FROM business"));assertEquals(1,f.count("SELECT COUNT(*) FROM starhub_request_results"));
+                Capture replayPending=new Capture();target.set(replayPending);failClose.set(true);AtomicHttp.run(request(f,op),replayPending.response,(a,b)->fail("Committed operation must not execute again"),db,f.p,()->{},f.files::transientCapacity);
+                assertEquals(503,replayPending.status.get());assertFalse(replayPending.bytes.toString(StandardCharsets.UTF_8).contains("\"ok\":true"));assertFalse(earlyOutput.get());
+                Capture replay=new Capture();target.set(replay);AtomicHttp.run(request(f,op),replay.response,(a,b)->fail("Committed operation must not execute again"),db,f.p,()->{},f.files::transientCapacity);
+                assertEquals(200,replay.status.get());assertTrue(replay.bytes.toString(StandardCharsets.UTF_8).contains("\"ok\":true"));assertEquals(1,executions.get());
+            }finally{if(previous==null)System.clearProperty("starhub.account.config");else System.setProperty("starhub.account.config",previous);Files.deleteIfExists(config);}
+        }
+    }
     @Test void innerRollbackCannotBeTurnedIntoAnHttpSuccess()throws Exception {
         try(Fixture f=new Fixture()){
             Path config=Files.createTempFile("starhub-atomic-synthetic-", ".properties");String previous=System.getProperty("starhub.account.config");

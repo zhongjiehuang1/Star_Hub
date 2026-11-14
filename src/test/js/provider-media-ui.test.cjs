@@ -41,8 +41,10 @@ function fixture(options={}){
   URL:{createObjectURL(){const url='blob:synthetic-'+(++serial);created.push(url);return url;},revokeObjectURL:url=>revoked.push(url)},
   fetch:async(_url,request)=>{const body=JSON.parse(request.body);requests.push(body);return options.fetch?options.fetch(body,request):binary(body);}});
  ctx.StarProviderMedia=api;vm.createContext(ctx);
+ vm.runInContext(section(app,'function validatedProviderContext(','function primaryDirection('),ctx);
  vm.runInContext(section(app,'let generatedPreviewMessage='),ctx);
  vm.runInContext(section(app,'function activateChat(','async function deleteChat('),ctx);
+ vm.runInContext(section(app,"document.addEventListener('starhub:provider-retry'","document.addEventListener('starhub:provider-result'"),ctx);
  vm.runInContext(section(app,"document.addEventListener('starhub:provider-result'","$('prompt').addEventListener('keydown'"),ctx);
  vm.runInContext(section(app,"$('chatForm').addEventListener('submit'","document.addEventListener('starhub:provider-retry'"),ctx);
  for(const [name,value] of Object.entries({task:'chat',prompt:'original draft',provider:'synthetic',model:'model',apiKey:'synthetic-placeholder',effort:'default'}))$(name).value=value;
@@ -144,4 +146,68 @@ test('owner ABA during result JSON reading cannot publish media or retire the or
  const pending=f.submit();await entered.promise;f.change('ABA');release.resolve();await pending;
  assert.equal(f.created.length,0);assert.equal(retired,0);assert.equal(f.chat.messages.length,2);
  assert.equal(f.chat.messages[1].incomplete,true);assert.equal((f.chat.messages[1].mediaRefs||[]).length,0);
+});
+
+function realConversationStorage(f){
+ const entries=new Map(),guest={values:{}},actions=[];
+ const sessionStorage={getItem:key=>entries.get(key)??null,setItem:(key,value)=>entries.set(key,value),removeItem:key=>entries.delete(key)};
+ f.ctx.TextEncoder=TextEncoder;f.ctx.sessionStorage=sessionStorage;f.ctx.window={sessionStorage,localStorage:sessionStorage,dispatchEvent(){}};
+ f.ctx.cloudQueue=Promise.resolve();f.ctx.cloudFailed=false;f.ctx.pendingFileOperations=new Map();f.ctx.historySaveTimer=0;
+ f.ctx.fetch=async(url,options)=>{
+  const body=JSON.parse(options.body);actions.push({url,body});
+  const headers={'Content-Type':'application/json','X-Four-Project-Durability':'dual'};
+  if(url==='api/guest-session'){
+   if(body.action==='get')return new Response(JSON.stringify(guest.values),{headers});
+   if(body.action==='begin')guest.staged='';if(body.action==='chunk')guest.staged+=body.data;
+   if(body.action==='commit')guest.values[body.field]=JSON.parse(guest.staged);
+   return new Response(JSON.stringify({state:'COMMITTED',action:body.action,transactionId:body.tx,operationId:operation}),{headers});
+  }
+  assert.equal(url,'api/workspace');assert.equal(body.action,'saveChat');
+  return new Response(JSON.stringify({operationId:body.operationId,operationState:'COMMITTED',revision:body.revision+1}),{headers});
+ };
+ vm.runInContext(fs.readFileSync(path.join(web,'storage.js'),'utf8'),f.ctx);
+ vm.runInContext(section(cloud,'function workspaceOwner(','function forgetFileOperation('),f.ctx);
+ vm.runInContext(section(cloud,'function serialCloud(','async function importGeneratedImage('),f.ctx);
+ const experience=fs.readFileSync(path.join(web,'experience.js'),'utf8');
+ vm.runInContext(section(experience,'async function persistProviderHistory(','function refreshConnectionSummary('),f.ctx);
+ return actions;
+}
+test('real submission confirms one pre-dispatch save with no empty guest mutation or duplicate save',async()=>{
+ const f=fixture(),actions=realConversationStorage(f);f.ctx.readInputFiles=async()=>[];f.$('inputFile').files=[];
+ await vm.runInContext('StarStore.initGuest()',f.ctx);actions.length=0;let dispatches=0;
+ const original=f.ctx.StarProviderOperations.requestPrepared;
+ f.ctx.StarProviderOperations.requestPrepared=async(...args)=>{
+  dispatches++;const saves=actions.filter(q=>q.url==='api/workspace');assert.equal(saves.length,1);
+  assert.equal(saves[0].body.data.messages.length,2);assert.equal(saves[0].body.data.messages[1].providerOperationId,operation);
+  assert.equal(saves[0].body.data.messages[1].content,'');assert.equal(f.chat.revision,1);
+  return original(...args);
+ };
+ await f.submit();assert.equal(dispatches,1);assert.equal(actions.filter(q=>q.url==='api/guest-session').length,0);
+ assert.equal(actions.filter(q=>q.url==='api/workspace').length,2);assert.equal(f.chat.revision,2);
+ assert.equal(f.chat.messages[1].incomplete,false);assert.equal(f.ctx.cloudFailed,false);
+});
+test('retry of an ABSENT original provider operation re-confirms history before any paid dispatch',async()=>{
+ const f=fixture();let confirms=0,dispatches=0,queries=0;
+ f.ctx.persistProviderHistory=async()=>{confirms++;if(confirms<=2)throw Error('synthetic storage busy');};
+ const original=f.ctx.StarProviderOperations.requestPrepared;
+ f.ctx.StarProviderOperations.requestPrepared=async(...args)=>{dispatches++;assert.equal(confirms,3);assert.equal(args[0].id,operation);return original(...args);};
+ f.ctx.StarProviderOperations.query=async candidate=>{queries++;assert.equal(candidate,operation);return {operationState:'ABSENT'};};
+ await f.submit();assert.equal(dispatches,0);assert.equal(f.chat.messages.length,2);assert.equal(f.chat.messages[1].incomplete,true);
+ await f.events.get('starhub:provider-retry')({detail:{operationId:operation}});
+ assert.equal(queries,1);assert.equal(dispatches,1);assert.equal(confirms,4);assert.equal(f.chat.messages.length,2);
+});
+test('an original SENT or UNKNOWN provider operation is never dispatched by the retry event',async()=>{
+ for(const state of ['SENT','UNKNOWN']){
+  const f=fixture();let dispatches=0;f.ctx.persistProviderHistory=async()=>{throw Error('synthetic storage busy');};
+  f.ctx.StarProviderOperations.requestPrepared=async()=>{dispatches++;throw Error('Must not dispatch');};
+  f.ctx.StarProviderOperations.query=async()=>({operationState:state});await f.submit();
+  await f.events.get('starhub:provider-retry')({detail:{operationId:operation}});assert.equal(dispatches,0);assert.equal(f.chat.messages.length,2);
+ }
+});
+
+test('single database success does not invent a degraded warning and preserves provider warnings',async()=>{
+ for(const warning of ['', 'Provider maintenance notice']){
+  const f=fixture();f.ctx.StarProviderOperations.requestPrepared=async()=>({response:new Response(JSON.stringify({operationId:operation,operationState:'COMPLETED',durability:'single',text:'synthetic answer',warning}),{headers:{'Content-Type':'application/json'}})});
+  await f.submit();assert.equal(f.chat.messages[1].warning,warning);assert.equal(f.chat.messages[1].content,'synthetic answer');
+ }
 });

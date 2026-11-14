@@ -82,6 +82,8 @@ final class StorageCluster {
     }
 
     Map<Integer,Probe> probes() {
+        try {if(SingleDatabase.enabled(config))return singleDatabaseProbe();}
+        catch(java.sql.SQLException invalid){throw StorageFailure.unavailable();}
         Map<Integer,URI> endpoints=endpoints();
         String physical=config.getProperty("storage.physicalNodeIds","").trim();
         if(!physical.isEmpty())return physicalProbes(physical,endpoints);
@@ -111,6 +113,8 @@ final class StorageCluster {
     }
 
     Set<Integer> physicalNodeIds() {
+        try {if(SingleDatabase.enabled(config)){SingleDatabase.validate(config);return Set.of(2);}}
+        catch(java.sql.SQLException invalid){throw StorageFailure.unavailable();}
         String raw=required("storage.physicalNodeIds");Set<Integer> result=new TreeSet<>();
         for(String value:raw.split(",",-1)){
             try{String id=value.trim();int node=Integer.parseInt(id);if(node<1||!Integer.toString(node).equals(id)||!result.add(node))throw StorageFailure.unavailable();}
@@ -175,6 +179,59 @@ final class StorageCluster {
             return Map.copyOf(result);
         }catch(InterruptedException interrupted){Thread.currentThread().interrupt();throw StorageFailure.unavailable();}
         catch(Exception failure){throw StorageFailure.unavailable();}
+    }
+
+    /** A fresh authenticated observation of the only database disk. No peer-Tomcat or GR lease is needed. */
+    private static StorageFailure capacityReject(OperationalDiagnostics.Reason reason) {
+        OperationalDiagnostics.record(reason);return StorageFailure.unavailable();
+    }
+    private Map<Integer,Probe> singleDatabaseProbe() {
+        try {SingleDatabase.validate(config);}catch(Exception unavailable){throw capacityReject(OperationalDiagnostics.Reason.CAPACITY_CONFIG);}
+        try {
+            java.nio.file.Path temporary=java.nio.file.Path.of(System.getProperty("java.io.tmpdir"));
+            if(!temporary.isAbsolute()||java.nio.file.Files.getFileStore(temporary).getUnallocatedSpace()<FLOOR)throw new java.io.IOException("temporary filesystem unavailable");
+        }catch(Exception unavailable){throw capacityReject(OperationalDiagnostics.Reason.CAPACITY_TEMP_FS_FAILURE);}
+        String address,token;
+        try {address=required("storage.single.capacity.url");if(!"http://127.0.0.1:942/capacity".equals(address))throw new IllegalArgumentException();token=required("storage.probe.token");if(token.length()<32)throw new IllegalArgumentException();}
+        catch(Exception unavailable){throw capacityReject(OperationalDiagnostics.Reason.CAPACITY_CONFIG);}
+        HttpResponse<byte[]> response;
+        try {
+            HttpRequest request=HttpRequest.newBuilder(URI.create(address)).timeout(Duration.ofMillis(1500))
+                    .header("Authorization","Bearer "+token).header("Accept","application/json").GET().build();
+            BoundedBody subscriber=new BoundedBody();var pending=http.sendAsync(request,ignored->subscriber);
+            try{response=pending.get(1500,java.util.concurrent.TimeUnit.MILLISECONDS);}catch(Exception e){pending.cancel(true);subscriber.cancel();throw e;}
+        }catch(InterruptedException interrupted){OperationalDiagnostics.record(OperationalDiagnostics.Reason.CAPACITY_INTERRUPT);Thread.currentThread().interrupt();throw StorageFailure.unavailable();}
+        catch(Exception unavailable){
+            throw capacityReject(OperationalDiagnostics.capacityReason(unavailable));
+        }
+        if(response.statusCode()!=200)throw capacityReject(OperationalDiagnostics.Reason.CAPACITY_BAD_STATUS);
+        JsonNode document;
+        try {document=ModelGateway.JSON.readTree(response.body());if(document==null||!document.isObject())throw new IllegalArgumentException();}
+        catch(Exception unavailable){throw capacityReject(OperationalDiagnostics.Reason.CAPACITY_PARSE_DOCUMENT);}
+        try {return Map.of(2,parseSingle(document,config,System.currentTimeMillis()));}
+        catch(StorageFailure rejected){throw rejected;}
+        catch(Exception unavailable){throw capacityReject(OperationalDiagnostics.Reason.CAPACITY_PARSE_IDENTITY);}
+    }
+    static Probe parseSingle(JsonNode value,Properties config,long now)throws Exception {
+        if(value.path("nodeId").asInt(-1)!=2||!SingleDatabase.uuid(config).equals(value.path("mysqlUuid").asText())
+                ||!"single-database".equals(value.path("topology").asText())||!"single".equals(value.path("mode").asText()))
+            throw capacityReject(OperationalDiagnostics.Reason.CAPACITY_PARSE_IDENTITY);
+        if(!value.path("observedAtMillis").isIntegralNumber()||!value.path("observedAtMillis").canConvertToLong()
+                ||!fresh(value.path("observedAtMillis").longValue(),now))
+            throw capacityReject(OperationalDiagnostics.Reason.CAPACITY_PARSE_FRESHNESS);
+        if(!value.path("reserveGuaranteed").asBoolean(false)||!value.path("capacityModelValidated").asBoolean(false)
+                ||!value.path("floorBytes").isIntegralNumber()||value.path("floorBytes").asLong()!=FLOOR
+                ||!value.path("globalReserveEnforcement").isBoolean()||value.path("globalReserveEnforcement").asBoolean())
+            throw capacityReject(OperationalDiagnostics.Reason.CAPACITY_PARSE_RESERVE);
+        if(value.path("physicalBytesPerPayloadByte").asLong(-1)!=6||value.path("fixedOverheadBytes").asLong(-1)!=30_044_160L)
+            throw capacityReject(OperationalDiagnostics.Reason.CAPACITY_PARSE_ESTIMATE);
+        JsonNode volumes=value.path("volumes");if(!volumes.isArray()||volumes.isEmpty())throw capacityReject(OperationalDiagnostics.Reason.CAPACITY_PARSE_VOLUMES);
+        long available=Long.MAX_VALUE;Set<String> ids=new HashSet<>();
+        for(JsonNode volume:volumes){String id=volume.path("id").asText();JsonNode bytes=volume.path("availableBytes");
+            if(id.isBlank()||!ids.add(id)||!bytes.isIntegralNumber()||!bytes.canConvertToLong()||bytes.longValue()<0)throw capacityReject(OperationalDiagnostics.Reason.CAPACITY_PARSE_VOLUMES);
+            available=Math.min(available,bytes.longValue());
+        }
+        return new Probe(2,value.path("observedAtMillis").longValue(),available,6,30_044_160L,true,false,"single");
     }
 
     private JsonNode fetch(int node,Map<Integer,URI> endpoints)throws Exception {

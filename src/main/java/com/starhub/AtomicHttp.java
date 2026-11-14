@@ -29,6 +29,7 @@ final class AtomicHttp {
         run(original,target,chain,service.atomic.database,service.config,service::ensureReady,service.atomic::transientCapacity);
     }
     static void run(HttpServletRequest original,HttpServletResponse target,FilterChain chain,AtomicDatabase database,Properties config,Runnable ensureReady,PhysicalAdmission physical)throws IOException,ServletException {
+        if(BoundedChatRead.selected(original)){BoundedChatRead.run(original,target,()->{ensureReady.run();return config;});return;}
         byte[] body=null;JsonNode input=ModelGateway.JSON.createObjectNode();String path=original.getServletPath(),op=null;HeavyRequestBody memory=null;
         boolean post="POST".equals(original.getMethod()),mutation=false,login=false,loginQuery=false,fileProtocol=false;
         try {
@@ -45,6 +46,8 @@ final class AtomicHttp {
                 if(mutation||login||fileProtocol)op=FileStorage.operationId(input.path("operationId").asText());
             }
             if(op==null)op=UUID.randomUUID().toString();
+            // Accepted requests retain the original fresh pre-SQL check; pre-admission refusals do not probe.
+            ensureReady.run();
             if(post&&"/api/workspace".equals(path)&&Set.of("upload","cancelUpload","deleteFile").contains(input.path("action").asText())){
                 // Content/cleanup consists of individually confirmed bounded TXs.
                 // Never wrap the whole logical operation in another SQL scope.
@@ -62,7 +65,10 @@ final class AtomicHttp {
             }
             for(int attempt=0;attempt<3;attempt++){
                 DeferredRequest request=new DeferredRequest(original,body);BufferedResponse buffered=new BufferedResponse(target);
-                try(AtomicDatabase.Scope scope=database.begin(op)){
+                AtomicDatabase.Scope active=null;
+                try {
+                  active=database.begin(op);
+                  try(AtomicDatabase.Scope scope=active){
                     long user=0;String generation=null;byte[] hash=null;
                     if(mutation){
                         HttpSession session=request.getSession(false);
@@ -71,31 +77,33 @@ final class AtomicHttp {
                         user=(Long)session.getAttribute("starhub.account.id");generation=(String)session.getAttribute("starhub.account.generation");
                         hash=requestHash(config,path,user,generation,input);
                         if(replay(scope.connection,buffered,op,user,generation,path,hash)){
-                            ensureReady.run();scope.commit();buffered.setHeader("X-Four-Project-Durability",scope.lease.mode());buffered.forward();return;
+                            ensureReady.run();scope.commit();scope.close();buffered.setHeader("X-Four-Project-Durability",scope.lease.mode());buffered.forward();return;
                         }
                     }
                     if(mutation)physical.check(scope.connection,WorkspaceMutationBudget.estimate(scope.connection,user,path,input));
                     chain.doFilter(request,buffered);buffered.finishWriter();
-                    if((mutation||fileProtocol)&&spaceRefusal(buffered)){storageRefusal(target,op);return;}
-                    if(mutation&&legacyRefusal(buffered)){failure(target,503,"LEGACY_CAPACITY_MIGRATION_REQUIRED","历史文件尚未通过当前分段容量模型验证；原文件和配额保留，需要先受控迁移。",op);return;}
+                    if((mutation||fileProtocol)&&spaceRefusal(buffered)){scope.close();storageRefusal(target,op);return;}
+                    if(mutation&&legacyRefusal(buffered)){scope.close();failure(target,503,"LEGACY_CAPACITY_MIGRATION_REQUIRED","历史文件尚未通过当前分段容量模型验证；原文件和配额保留，需要先受控迁移。",op);return;}
                     boolean loginOutcome=login&&(buffered.getStatus()==200||buffered.getStatus()==401||buffered.getStatus()==429);
                     boolean queryOutcome=loginQuery&&(buffered.getStatus()==200||buffered.getStatus()==404||buffered.getStatus()==429);
                     boolean passwordOutcome=mutation&&"/api/account".equals(path)&&"changePassword".equals(input.path("action").asText())&&Set.of(200,400,403,429).contains(buffered.getStatus());
-                    if(buffered.getStatus()>=400&&!loginOutcome&&!queryOutcome&&!passwordOutcome){buffered.forward();return;}
+                    if(buffered.getStatus()>=400&&!loginOutcome&&!queryOutcome&&!passwordOutcome){scope.close();buffered.forward();return;}
                     if(scope.rollbackOnly)throw StorageFailure.pending();
                     if(mutation){
                         buffered.identify(op);if(buffered.bytes.size()>MAX_MUTATION_RECEIPT_BYTES)throw new SQLException("Mutation receipt exceeds its physical model bound");save(scope.connection,buffered,op,user,generation,path,hash);
                     }
                     if(loginOutcome)buffered.identify(op);
-                    ensureReady.run();scope.commit();request.apply();
+                    ensureReady.run();scope.commit();scope.close();request.apply();
                     buffered.setHeader("X-Four-Project-Durability",scope.lease.mode());buffered.forward();return;
+                  }
                 }catch(SQLException failure){
-                    if(AtomicDatabase.knownRollback(failure)&&attempt<2)continue;
+                    OperationalDiagnostics.record(failure instanceof SQLTransientConnectionException?OperationalDiagnostics.Reason.ATOMIC_SQL_TRANSIENT:OperationalDiagnostics.Reason.ATOMIC_SQL_OTHER);
+                    if(!(SingleDatabase.enabled(config)&&active!=null&&active.committing)&&AtomicDatabase.knownRollback(failure)&&attempt<2)continue;
                     failure(target,503,mutation||login||fileProtocol?"OPERATION_PENDING":"CLUSTER_UNAVAILABLE","服务器故障，请等待恢复",mutation||login||fileProtocol?op:null);return;
                 }
             }
         }catch(StorageFailure failure){if(failure.status==429)target.setHeader("Retry-After","1");failure(target,failure.status,failure.code,failure.getMessage(),mutation||login||fileProtocol?op:null);}
-        catch(Exception unavailable){failure(target,503,mutation||login||fileProtocol?"OPERATION_PENDING":"CLUSTER_UNAVAILABLE","服务器故障，请等待恢复",mutation||login||fileProtocol?op:null);}
+        catch(Exception unavailable){OperationalDiagnostics.record(OperationalDiagnostics.Reason.ATOMIC_UNEXPECTED);failure(target,503,mutation||login||fileProtocol?"OPERATION_PENDING":"CLUSTER_UNAVAILABLE","服务器故障，请等待恢复",mutation||login||fileProtocol?op:null);}
         finally{if(memory!=null)memory.close();}
     }
     static ObjectNode result(Connection c,long user,String generation,String operation)throws Exception {
@@ -150,11 +158,13 @@ final class AtomicHttp {
         // not proof that the logical operation rolled back or can use a new ID.
         failure(response,507,"INSUFFICIENT_STORAGE","服务器存储空间不足；请保留原操作编号查询结果或取消待完成上传。已提交的分段及预留不会因本次拒绝自动删除。",operation);
     }
-    private static void failure(HttpServletResponse response,int status,String code,String message,String op)throws IOException {
+    static void failure(HttpServletResponse response,int status,String code,String message,String op)throws IOException {
         if(response.isCommitted())throw new IOException("Atomic reply was committed before confirmation");
         response.resetBuffer();response.setStatus(status);response.setContentType("application/json;charset=UTF-8");response.setHeader("Cache-Control","no-store");
         ObjectNode body=ModelGateway.JSON.createObjectNode().put("code",code).put("error",message);
-        if(op!=null)body.put("operationId",op).put("operationState","UNKNOWN");ModelGateway.JSON.writeValue(response.getOutputStream(),body);
+        if(op!=null)body.put("operationId",op).put("operationState","UNKNOWN");
+        if("ATOMIC_WRITER_BUSY".equals(code)||"BOUNDED_READ_BUSY".equals(code)||"MEMORY_BUSY".equals(code))body.put("state","NOT_STARTED").put("operationState","NOT_STARTED");
+        ModelGateway.JSON.writeValue(response.getOutputStream(),body);
     }
 
     static final class BufferedResponse extends HttpServletResponseWrapper {

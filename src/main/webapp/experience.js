@@ -5,8 +5,8 @@ const verifiedKeys=new Map();
 function persistHistory(){
   clearTimeout(historySaveTimer);if(!experienceReady)return;
   if(current)current.draft=$('prompt').value;
-  if(accountEmail){saveCloudChats().catch(()=>{});return;}
-  const saved=StarStore.saveHistory(chats,current?.id);if(!saved&&!historySaveFailed)showError(t('无法保存临时会话，请检查浏览器存储空间。'));historySaveFailed=!saved;
+  if(accountEmail){const owner=accountEmail,revision=accountIdentityRevision;saveCloudChats().catch(error=>{if(accountEmail===owner&&accountIdentityRevision===revision)showError(error.message||t('云端保存失败。刷新前请导出此对话。'));});return;}
+  try{const saved=StarStore.saveHistory(chats,current?.id);if(!saved&&!historySaveFailed)showError(t('无法保存临时会话，请检查浏览器存储空间。'));historySaveFailed=!saved;}catch(error){historySaveFailed=true;showError(error.message||t('无法保存临时会话，请检查浏览器存储空间。'));}
 }
 function scheduleHistorySave(){
   if(!experienceReady||busy||realtimeActive)return;
@@ -26,12 +26,12 @@ async function persistProviderHistory(expectedEmail,chatId){
 function refreshConnectionSummary(){
   if(!catalog)return;const m=selectedModel(),p=providers.find(p=>p.id===$('provider').value);
   $('connectionSummary').textContent=m?`${p.name} · ${m.name}`:t('选择你的模型');
-  $('connectProvider').textContent=$('apiKey').value.trim()?t('管理连接'):t('连接官方厂商');
+  $('connectProvider').textContent=$('apiKey').value.trim()?t('管理连接'):t('连接服务');
   $('connectionState').textContent=verifiedKeys.get(p?.id)===$('apiKey').value.trim()&&$('apiKey').value.trim()?t('密钥已验证'):$('apiKey').value.trim()?t('已填写'):t('待配置');
   $('connectProvider').disabled=busy||realtimeActive||!ready;
 }
 function setupProvider(){return providers.find(p=>p.id===$('setupProvider').value);}
-function setupModel(){const p=setupProvider();return catalog.models.find(m=>m.provider===p.id&&m.id===settings.get(p.id))||catalog.models.find(m=>m.provider===p.id&&!m.batch&&m.categories.includes('chat'));}
+function setupModel(){const p=setupProvider(),models=directionModels('general').filter(m=>m.provider===p.id);const chosen=preferredModelId(p.id,'general',models,directionSettings.get(`${p.id}|general`)||settings.get(p.id));return models.find(m=>m.id===chosen);}
 function refreshSetup(){
   if(!catalog)return;const p=setupProvider(),m=setupModel();
   for(let i=1;i<=3;i++){$('setupStep'+i).classList.toggle('active',i===wizardStep);$('setupStep'+i).setAttribute('aria-current',i===wizardStep?'step':'false');}
@@ -116,7 +116,7 @@ document.addEventListener('starhub:languagechanged',()=>{
   // Localize catalog labels without replacing controls containing user input.
   for(const option of $('provider').options)option.textContent=providers.find(p=>p.id===option.value)?.name||option.textContent;
   for(const option of $('setupProvider').options)option.textContent=providers.find(p=>p.id===option.value)?.name||option.textContent;
-  for(const option of $('model').options){const m=catalog.models.find(m=>m.provider===$('provider').value&&m.id===option.value);if(m)option.textContent=m.name+(m.accessLabel?' · '+m.accessLabel:'');}
+  for(const option of $('model').options){const m=catalog.models.find(m=>m.provider===$('provider').value&&m.id===option.value);if(m)option.textContent=modelOptionLabel(m);}
   for(const group of $('model').querySelectorAll('optgroup')){const m=catalog.models.find(m=>m.provider===$('provider').value&&m.id===group.firstElementChild?.value);if(m)group.label=`${m.vendorName} · ${m.family}`;}
   for(const option of $('task').options)option.textContent=catalog.categories[option.value]||option.textContent;
   for(const option of $('effort').options)option.textContent=option.value==='default'?t('平台默认'):`${uiText(effortNames[option.value])||option.value} (${option.value})`;

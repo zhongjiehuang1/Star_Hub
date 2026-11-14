@@ -37,7 +37,10 @@ public final class StorageLifecycle implements ServletContextListener {
                 if(!closing&&FileStorage.active==null&&candidate!=null){FileStorage.active=candidate;candidate=null;reportedFailure=false;}
             }
         }catch(Exception failure){
-            synchronized(lock){if(!closing&&!reportedFailure){context.log("Star Hub storage remains unavailable: initialization will retry.");reportedFailure=true;}}
+            synchronized(lock){
+                int poolState=SingleDatabaseConnections.closePoolAfterFailure(!closing);
+                if(!closing&&!reportedFailure){context.log(poolState==2?"Star Hub storage remains unavailable: pool shutdown is unconfirmed; restart required.":"Star Hub storage remains unavailable: initialization will retry.");reportedFailure=true;}
+            }
         }finally{
             // A constructor finishing after shutdown must never publish a coordinator.
             if(candidate!=null)try{candidate.close();}catch(Exception failure){context.log("Star Hub storage requires recovery before reopening.");}
@@ -48,6 +51,8 @@ public final class StorageLifecycle implements ServletContextListener {
     public void contextDestroyed(ServletContextEvent event) {
         FileStorage service;ScheduledExecutorService executor;
         synchronized(lock){closing=true;executor=retries;if(executor!=null)executor.shutdownNow();service=FileStorage.active;FileStorage.active=null;}
+        SingleDatabaseConnections.fenceForShutdown();
+        if(service==null){int state=SingleDatabaseConnections.terminateForShutdown();if(state==2)event.getServletContext().log("Star Hub pool shutdown is unconfirmed; restart required.");}
         if(executor!=null)try{executor.awaitTermination(20,TimeUnit.SECONDS);}catch(InterruptedException interrupted){Thread.currentThread().interrupt();}
         if(service!=null)try{service.close();}catch(Exception failure){event.getServletContext().log("Star Hub storage requires recovery before reopening.");}
     }

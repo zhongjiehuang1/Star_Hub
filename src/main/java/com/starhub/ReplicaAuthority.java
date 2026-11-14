@@ -22,7 +22,8 @@ final class ReplicaAuthority {
             "storage.node2.db.url","storage.node2.db.user","storage.node2.db.password",
             "storage.objectStore.backend","storage.objectStore.jdbc.url","storage.objectStore.jdbc.user",
             "storage.objectStore.jdbc.password","storage.objectStore","storage.transactionNode",
-            "storage.authority.url","storage.probe.token","storage.ingress.token","storage.physicalNodeIds","storage.transactionMode","storage.idempotency.secret","vault.key"};
+            "storage.authority.url","storage.probe.token","storage.ingress.token","storage.physicalNodeIds","storage.transactionMode","storage.idempotency.secret","vault.key",
+            "storage.single.pool.enabled","storage.topology","storage.mysqlUuid","storage.single.transport","storage.single.mysqlPort","storage.single.capacity.url"};
 
     static boolean enabled(Properties p) throws SQLException {
         String value=p.getProperty("storage.replicated","false");
@@ -55,7 +56,58 @@ final class ReplicaAuthority {
             throw new SQLException("Replicated capacity observers changed; restart the coordinator");
     }
 
-    static Lease lease(Properties p) throws SQLException { return authority(p,true); }
+    /** One fresh caller acquisition, bound to this request's exact routing configuration. */
+    static final class CheckedOpen {
+        private final Lease lease;
+        private final Properties routing;
+        private CheckedOpen(Lease lease,Properties routing){this.lease=lease;this.routing=routing;}
+        Lease lease(){return lease;}
+        @Override public String toString(){return "Fresh checked SQL open";}
+    }
+    static Properties checkedRouting(Properties config){
+        Properties snapshot=new Properties();for(String key:config.stringPropertyNames())snapshot.setProperty(key,config.getProperty(key));return snapshot;
+    }
+    static CheckedOpen captureCheckedOpen(Properties config)throws SQLException {
+        if(!enabled(config)||!"atomic".equals(config.getProperty("storage.transactionMode")))throw new SQLException("Checked opens require atomic replicated mode");
+        Properties snapshot=checkedRouting(config);try{validateEndpoints(snapshot);}catch(IllegalArgumentException invalid){throw new SQLException("Invalid checked SQL routing",invalid);}
+        Lease lease=lease(snapshot);
+        return bindCheckedOpen(config,lease,snapshot);
+    }
+    /** Bind an already freshly acquired lease to an explicit immutable configuration baseline. */
+    static CheckedOpen bindCheckedOpen(Properties config,Lease lease,Properties capturedRouting)throws SQLException {
+        if(!enabled(config)||!"atomic".equals(config.getProperty("storage.transactionMode")))throw new SQLException("Checked opens require atomic replicated mode");
+        sameRouting(capturedRouting,config);
+        if(SingleDatabase.enabled(config)){if(!SingleDatabase.marker(config).equals(lease))throw new SQLException("Single database marker mismatch");return new CheckedOpen(lease,checkedRouting(capturedRouting));}
+        try{validateEndpoints(config);}catch(IllegalArgumentException invalid){throw new SQLException("Invalid checked SQL routing",invalid);}
+        try{
+            if(lease==null||!UUID.fromString(lease.mysqlUuid()).toString().equals(lease.mysqlUuid())||!lease.stamp().matches("[0-9a-f]{64}")
+                ||lease.view()==null||lease.view().isBlank()||lease.view().length()>200||!lease.epoch().matches("[1-9][0-9]{0,19}")
+                ||!java.util.Set.of("dual","single").contains(lease.mode())||!UUID.fromString(lease.boot()).toString().equals(lease.boot())||!lease.membership().matches("[0-9a-f]{64}"))throw new SQLException("Complete captured lease required");
+        }catch(IllegalArgumentException|NullPointerException invalid){throw new SQLException("Invalid captured lease",invalid);}
+        return new CheckedOpen(lease,checkedRouting(capturedRouting));
+    }
+    static void validateCheckedOpen(Properties config,CheckedOpen checked)throws SQLException {
+        if(checked==null||!enabled(config)||!"atomic".equals(config.getProperty("storage.transactionMode")))throw new SQLException("Fresh checked-open binding required");
+        sameRouting(checked.routing,config);
+        try{validateEndpoints(config);}catch(IllegalArgumentException invalid){throw new SQLException("Invalid checked SQL routing",invalid);}
+    }
+    static void verify(Connection connection,Properties config,CheckedOpen checked)throws SQLException {
+        validateCheckedOpen(config,checked);if(SingleDatabase.enabled(config)){SingleDatabase.verify(connection,config);return;}Endpoint local=endpoint(config,"db.url");
+        try(Statement q=connection.createStatement();ResultSet rows=q.executeQuery("SELECT @@server_uuid,@@session.sql_log_bin,@@session.group_replication_consistency,DATABASE(),@@port")){
+            if(!rows.next())throw new SQLException("Checked SQL identity unavailable");
+            String actual=rows.getString(1);
+            try{if(actual==null||!UUID.fromString(actual).toString().equals(checked.lease.mysqlUuid()))throw new SQLException("Checked SQL writer mismatch");}
+            catch(IllegalArgumentException invalid){throw new SQLException("Invalid checked SQL writer",invalid);}
+            if(rows.getInt(2)!=1||!"BEFORE_AND_AFTER".equals(rows.getString(3))||!local.schema().equals(rows.getString(4))||rows.getInt(5)!=local.port())
+                throw new SQLException("Checked SQL session or schema differs from its captured route");
+        }
+    }
+    static Connection checked(Connection connection,Properties config,CheckedOpen checked)throws SQLException {
+        try{verify(connection,config,checked);return connection;}
+        catch(SQLException|RuntimeException failure){SingleDatabaseConnections.invalidate(connection);try{connection.close();}catch(SQLException close){failure.addSuppressed(close);}throw failure;}
+    }
+
+    static Lease lease(Properties p) throws SQLException { return SingleDatabase.enabled(p)?SingleDatabase.marker(p):authority(p,true); }
     static void unchanged(Properties p,Lease expected)throws SQLException {
         if(expected==null||!expected.equals(lease(p)))throw new SQLException("Replicated authority changed; query the original operation result");
     }
@@ -82,6 +134,7 @@ final class ReplicaAuthority {
                 &&java.util.Objects.equals(lease.membership(),connection.getHeaderField("X-Four-Project-Membership"));
     }
     static void confirm(Properties p,Lease lease,String gtidSet,String operation)throws SQLException {
+        if(SingleDatabase.enabled(p)){if(!SingleDatabase.marker(p).equals(lease))throw new SQLException("Single database identity changed");return;}
         HttpURLConnection connection=null;
         try {
             URI uri=observer(p);String token=token(p);
@@ -127,6 +180,7 @@ final class ReplicaAuthority {
     }
 
     static void verify(Connection connection,Properties p) throws SQLException {
+        if(SingleDatabase.enabled(p)){SingleDatabase.verify(connection,p);return;}
         if(!enabled(p))return;
         String expected=identity(p);
         try(Statement statement=connection.createStatement();ResultSet rows=statement.executeQuery("SELECT @@server_uuid,@@session.sql_log_bin,@@session.group_replication_consistency")) {
@@ -144,6 +198,6 @@ final class ReplicaAuthority {
 
     static Connection checked(Connection connection,Properties p) throws SQLException {
         try{verify(connection,p);return connection;}
-        catch(SQLException|RuntimeException failure){try{connection.close();}catch(SQLException close){failure.addSuppressed(close);}throw failure;}
+        catch(SQLException|RuntimeException failure){SingleDatabaseConnections.invalidate(connection);try{connection.close();}catch(SQLException close){failure.addSuppressed(close);}throw failure;}
     }
 }

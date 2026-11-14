@@ -13,6 +13,22 @@ public final class WorkspaceServlet extends HttpServlet {
  static final Set<String> TYPES=Set.of("image/png","image/jpeg","image/webp","audio/mpeg","audio/wav","audio/x-wav","audio/mp4","audio/webm","application/pdf","text/plain");
  private void send(HttpServletResponse r,int status,JsonNode data)throws IOException{r.setStatus(status);r.setContentType("application/json;charset=UTF-8");r.setHeader("Cache-Control","no-store");ModelGateway.JSON.writeValue(r.getOutputStream(),data);}
  private void fail(HttpServletResponse r,int status,String message)throws IOException{send(r,status,ModelGateway.JSON.createObjectNode().put("error",message));}
+ boolean segmentedFileAction(HttpServletRequest req,HttpServletResponse res,long user,JsonNode body,String action)throws Exception{
+   // These protocols open and confirm their own bounded transactions. Opening
+   // an otherwise unused connection here repeats TLS/identity setup and is not
+   // an authorization check: activeSession above and each segment's actor check
+   // remain mandatory.
+   if(action.equals("cancelUpload")){send(res,200,FileStorage.get().cancelUpload(user,body.path("operationId").asText()));return true;}
+   if(action.equals("upload")){
+    String name=body.path("name").asText(),mime=body.path("mime").asText(),encoded=body.path("data").asText();
+    if(name.isBlank()||name.length()>255||name.indexOf('/')>=0||name.indexOf('\\')>=0||!TYPES.contains(mime)||encoded.length()>((FILE_MAX+2)/3)*4){fail(res,400,"文件类型或大小不受支持。");return true;}
+    byte[] content;try{content=Base64.getDecoder().decode(encoded);}catch(IllegalArgumentException e){fail(res,400,"文件格式无效。");return true;}
+    if(content.length==0||content.length>FILE_MAX){fail(res,400,"文件必须大于 0 且不超过 4 MiB。");return true;}
+    send(res,200,FileStorage.get().uploadReserved(req,user,body.path("operationId").asText(),List.of(new FileStorage.Upload(name,mime,content))));return true;
+   }
+   if(action.equals("deleteFile")){send(res,200,FileStorage.get().delete(user,body.path("operationId").asText(),body.path("id").asText()));return true;}
+   return false;
+ }
  protected void doPost(HttpServletRequest req,HttpServletResponse res)throws IOException{
   String origin=req.getHeader("Origin");
   if(!"web".equals(req.getHeader("X-Starhub-Client"))||!DeploymentConfig.allowsOrigin(origin)||req.getContentType()==null||!req.getContentType().toLowerCase(Locale.ROOT).startsWith("application/json")){fail(res,403,"请求来源无效。");return;}
@@ -20,8 +36,11 @@ public final class WorkspaceServlet extends HttpServlet {
   byte[] bytes=req.getInputStream().readNBytes(6*1024*1024+1);if(bytes.length>6*1024*1024){fail(res,413,"请求超过限制。");return;}
   JsonNode body;try{body=ModelGateway.JSON.readTree(bytes);}catch(Exception e){fail(res,400,"请求无效。");return;}if(body==null||!body.isObject()){fail(res,400,"请求无效。");return;}
   if(!Objects.equals(session.getAttribute("starhub.account.email"),body.path("expectedEmail").asText())){fail(res,409,"账户已在另一个标签页更改，请刷新后重试。");return;}
-  try(Connection c=AccountServlet.db(AccountServlet.config())){
-   String action=body.path("action").asText();ObjectNode out=ModelGateway.JSON.createObjectNode();
+  String action=body.path("action").asText();
+  try{
+   if(segmentedFileAction(req,res,user,body,action))return;
+   try(Connection c=AccountServlet.db(AccountServlet.config())){
+   ObjectNode out=ModelGateway.JSON.createObjectNode();
    if(action.equals("listChats")){send(res,200,ConversationPages.load(c,user,(String)session.getAttribute("starhub.account.generation"),body));return;}
    if(action.equals("saveChat")){
     String id=body.path("id").asText(),title=body.path("title").asText(),payload=body.path("data").toString();long revision=body.path("revision").asLong(0);
@@ -39,23 +58,15 @@ public final class WorkspaceServlet extends HttpServlet {
     JsonNode files=body.path("files");if(!files.isArray()||files.size()!=1||!files.get(0).path("size").isIntegralNumber()||files.get(0).path("size").asLong()>FILE_MAX){fail(res,400,"每次普通上传仅支持一个不超过 4 MiB 的文件。");return;}
     send(res,200,FileStorage.get().reserveUpload(req,user,body.path("operationId").asText(),files));return;
    }
-   if(action.equals("cancelUpload")){send(res,200,FileStorage.get().cancelUpload(user,body.path("operationId").asText()));return;}
-   if(action.equals("upload")){
-    String name=body.path("name").asText(),mime=body.path("mime").asText(),encoded=body.path("data").asText();
-    if(name.isBlank()||name.length()>255||name.indexOf('/')>=0||name.indexOf('\\')>=0||!TYPES.contains(mime)||encoded.length()>((FILE_MAX+2)/3)*4){fail(res,400,"文件类型或大小不受支持。");return;}
-    byte[] content;try{content=Base64.getDecoder().decode(encoded);}catch(IllegalArgumentException e){fail(res,400,"文件格式无效。");return;}
-    if(content.length==0||content.length>FILE_MAX){fail(res,400,"文件必须大于 0 且不超过 4 MiB。");return;}
-    send(res,200,FileStorage.get().uploadReserved(req,user,body.path("operationId").asText(),List.of(new FileStorage.Upload(name,mime,content))));return;
-   }
    if(action.equals("readFile")){send(res,200,FileStorage.get().read(user,body.path("id").asText()));return;}
    if(action.equals("trashFile")||action.equals("restoreFile")){send(res,200,FileStorage.get().trash(user,body.path("operationId").asText(),body.path("id").asText(),action.equals("restoreFile")));return;}
-   if(action.equals("deleteFile")){send(res,200,FileStorage.get().delete(user,body.path("operationId").asText(),body.path("id").asText()));return;}
    if(action.equals("operationStatus")){send(res,200,FileStorage.get().status(user,body.path("operationId").asText()));return;}
    if(action.equals("operationSummary")){send(res,200,FileStorage.get().summary(user,body.path("operationId").asText()));return;}
    if(action.equals("requestStatus")){send(res,200,AtomicHttp.result(c,user,(String)session.getAttribute("starhub.account.generation"),body.path("operationId").asText()));return;}
    fail(res,400,"操作无效。");
-  }catch(StorageFailure e){send(res,e.status,ModelGateway.JSON.createObjectNode().put("error",e.getMessage()).put("code",e.code));}
+   }
+  }catch(StorageFailure e){if(e.status>=500)OperationalDiagnostics.record(OperationalDiagnostics.Reason.WORKSPACE_STORAGE_FAILURE);send(res,e.status,ModelGateway.JSON.createObjectNode().put("error",e.getMessage()).put("code",e.code));}
   catch(IllegalArgumentException e){fail(res,400,"请求参数无效。");}
-  catch(Exception e){send(res,503,ModelGateway.JSON.createObjectNode().put("error","服务器故障，请等待恢复").put("code","CLUSTER_UNAVAILABLE"));}
+  catch(Exception e){OperationalDiagnostics.record(OperationalDiagnostics.Reason.WORKSPACE_UNEXPECTED);send(res,503,ModelGateway.JSON.createObjectNode().put("error","服务器故障，请等待恢复").put("code","CLUSTER_UNAVAILABLE"));}
  }
 }

@@ -31,7 +31,7 @@ final class JdbcDecisionStore {
         MysqlDataSource source=replicated?new GuardedDataSource(properties):new MysqlDataSource();source.setURL(url);
         source.setUser(required(properties,"storage.objectStore.jdbc.user"));
         source.setPassword(required(properties,"storage.objectStore.jdbc.password"));
-        source.setConnectTimeout(3000);source.setSocketTimeout(AccountServlet.databaseSocketTimeout(properties));
+        source.setConnectTimeout(SingleDatabase.enabled(properties)?2000:3000);source.setSocketTimeout(AccountServlet.databaseSocketTimeout(properties));
         validate(source,expectedIdentity);return source;
     }
 
@@ -39,8 +39,12 @@ final class JdbcDecisionStore {
         private final Properties config=new Properties();
         GuardedDataSource(Properties properties){config.putAll(properties);}
         @Override public Connection getConnection(String user,String password)throws SQLException {
-            return ReplicaAuthority.checked(super.getConnection(user,password),config);
+            requireExpectedCredentials(config,user,password);
+            return ReplicaAuthority.checked(SingleDatabaseConnections.open(config,"storage.objectStore.jdbc.url",()->super.getConnection(user,password)),config);
         }
+    }
+    static void requireExpectedCredentials(Properties p,String user,String password)throws SQLException {
+        if(!java.util.Objects.equals(p.getProperty("storage.objectStore.jdbc.user"),user)||!java.util.Objects.equals(p.getProperty("storage.objectStore.jdbc.password"),password))throw new SQLException("Decision-store credentials differ from reviewed routing");
     }
     private static String required(Properties p,String key) {
         String value=p.getProperty(key);if(value==null||value.isBlank())throw new IllegalArgumentException("Missing "+key);return value;

@@ -16,7 +16,7 @@ class AdvancedGatewayTest {
         int count=0;for(JsonNode m:Catalog.DATA.path("models"))if(Catalog.contains(m.path("categories"),"realtime")){
             count++;JsonNode e=RealtimeBridge.sessionConfig(m,"");JsonNode input=e.path("session").path("audio").path("input");assertEquals(24000,input.path("format").path("rate").asInt());assertTrue(input.path("turn_detection").isNull());assertTrue(input.path("noise_reduction").isNull());
             boolean transcription=!Catalog.contains(m.path("outputs"),"audio");assertEquals(transcription?"transcription":"realtime",e.path("session").path("type").asText());assertEquals(transcription,input.has("transcription"));
-        }assertEquals(1,count);
+        }assertTrue(count>=2);assertNotNull(Catalog.find("openai","gpt-realtime-2.1"));assertNotNull(Catalog.find("openai","gpt-realtime-2.1-mini"));
     }
     @Test void realtimeHandshakeRelaysAudioAndRedactsErrors()throws Exception{
         List<String> up=new ArrayList<>(),down=new ArrayList<>();AtomicReference<Consumer<String>> incoming=new AtomicReference<>();AtomicBoolean upClosed=new AtomicBoolean(),downClosed=new AtomicBoolean();
@@ -42,7 +42,7 @@ class AdvancedGatewayTest {
     }
     @Test void imageMessagesMapToAllThreeProtocolsAndResponses()throws Exception{
         String image="data:image/png;base64,AAAA";
-        String[][] cases={{"openai","gpt-6.1-sol"},{"anthropic","claude-sonnet-4-5"},{"gemini","gemini-3.8-flash"}};
+        String[][] cases={{"openai","gpt-6.1-sol"},{"anthropic","claude-fable-5-2"},{"gemini","gemini-4-carbon"}};
         for(String[] item:cases){
             ModelGateway gateway=new ModelGateway((uri,headers,bytes)->{
                 JsonNode body=ModelGateway.JSON.readTree(bytes);String result;

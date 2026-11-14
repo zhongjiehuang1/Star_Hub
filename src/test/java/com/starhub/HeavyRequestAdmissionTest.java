@@ -18,6 +18,51 @@ class HeavyRequestAdmissionTest {
     }
     private HttpServletRequest request(String path,String body)throws Exception{return request(path,new ByteArrayInputStream(body.getBytes(StandardCharsets.UTF_8)));}
     private void free(){var lease=ProviderAdmission.tryEnter();assertNotNull(lease);lease.close();}
+    private String login(String id){return ModelGateway.JSON.createObjectNode().put("action","login").put("email","unknown@example.test").put("password","synthetic-test-only-password").put("operationId",id).toString();}
+    @Test void boundedLoginUsesItsOwnSingleSlotWhileHeavyWorkRemainsExclusive()throws Exception {
+        var heavy=ProviderAdmission.tryEnter();assertNotNull(heavy);
+        try{
+            String body=login(UUID.randomUUID().toString());var first=HeavyRequestBody.read(request("/api/account",body),6*1024*1024,"/api/account");
+            assertNull(ProviderAdmission.tryEnter());
+            var busy=assertThrows(StorageFailure.class,()->HeavyRequestBody.read(request("/api/account",body),6*1024*1024,"/api/account"));assertEquals(429,busy.status);assertEquals("ACCOUNT_BUSY",busy.code);
+            first.close();first.close();try(var next=HeavyRequestBody.read(request("/api/account",body),6*1024*1024,"/api/account")){assertEquals(body.getBytes(StandardCharsets.UTF_8).length,next.bytes.length);assertEquals(429,assertThrows(StorageFailure.class,()->HeavyRequestBody.read(request("/api/account",body),6*1024*1024,"/api/account")).status);}
+            assertNull(ProviderAdmission.tryEnter());
+        }finally{heavy.close();}free();
+    }
+    @Test void extraUnknownOversizedMalformedDuplicateAndTruncatedBodiesCannotClaimTheSmallAuthSlot()throws Exception {
+        var heavy=ProviderAdmission.tryEnter();assertNotNull(heavy);String exact=login(UUID.randomUUID().toString());
+        try{
+            var value=(com.fasterxml.jackson.databind.node.ObjectNode)ModelGateway.JSON.readTree(exact);
+            for(String body:List.of(value.deepCopy().put("data","extra field").toString(),value.deepCopy().put("action","keys").toString(),value.deepCopy().put("password","x".repeat(257)).toString(),value.deepCopy().put("email","x".repeat(255)).toString(),value.deepCopy().put("operationId","invalid-id").toString(),exact+" ".repeat(HeavyRequestBody.SMALL_LIMIT),exact.substring(0,exact.length()-1),exact+"{}",exact.substring(0,1)+"\"action\":\"login\","+exact.substring(1))){
+                var refusal=assertThrows(StorageFailure.class,()->HeavyRequestBody.read(request("/api/account",body),6*1024*1024,"/api/account"));assertEquals("MEMORY_BUSY",refusal.code);
+                try(var valid=HeavyRequestBody.read(request("/api/account",exact),6*1024*1024,"/api/account")){assertTrue(valid.bytes.length<HeavyRequestBody.SMALL_LIMIT);}
+            }
+            var timeout=request("/api/account",new InputStream(){public int read()throws IOException{throw new SocketTimeoutException("Synthetic truncated body timeout");}});assertThrows(SocketTimeoutException.class,()->HeavyRequestBody.read(timeout,6*1024*1024,"/api/account"));
+            try(var valid=HeavyRequestBody.read(request("/api/account",exact),6*1024*1024,"/api/account")){assertNotNull(valid);}
+        }finally{heavy.close();}free();
+    }
+    @Test void declaredContentLengthCannotHideTrailingBytesOrOversizedBodyAndMalformedRequestDoesNotLeakSlots()throws Exception {
+        String exact=login(UUID.randomUUID().toString());var heavy=ProviderAdmission.tryEnter();assertNotNull(heavy);
+        try{
+            var request=request("/api/account",exact+"{} ");when(request.getContentLength()).thenReturn(1);when(request.getContentLengthLong()).thenReturn(1L);
+            assertEquals("MEMORY_BUSY",assertThrows(StorageFailure.class,()->HeavyRequestBody.read(request,6*1024*1024,"/api/account")).code);
+            var large=request("/api/account",exact+" ".repeat(HeavyRequestBody.SMALL_LIMIT));when(large.getContentLength()).thenReturn(0);when(large.getContentLengthLong()).thenReturn(0L);
+            assertEquals("MEMORY_BUSY",assertThrows(StorageFailure.class,()->HeavyRequestBody.read(large,6*1024*1024,"/api/account")).code);
+        }finally{heavy.close();}
+        var malformed=new AtomicTransactionsTest.Capture();AtomicHttp.run(request("/api/account",exact.substring(0,exact.length()-1)),malformed.response,(a,b)->fail("Malformed login reached handler"),null,new Properties(),()->{},(c,n)->fail("Malformed login reached SQL"));assertEquals(400,malformed.status.get());free();
+        try(var auth=HeavyRequestBody.read(request("/api/account",exact),6*1024*1024,"/api/account")){assertNotNull(auth);}free();
+    }
+    @Test void loginAttemptFailureAndLostConfirmationKeepOneDurableCountUnderHeavySlotContention()throws Exception {
+        var heavy=ProviderAdmission.tryEnter();assertNotNull(heavy);
+        java.nio.file.Path config=java.nio.file.Files.createTempFile("starhub-small-auth-test-",".properties");String previous=System.getProperty("starhub.account.config");
+        try(var f=new AtomicTransactionsTest.Fixture()){
+            try(OutputStream out=java.nio.file.Files.newOutputStream(config)){f.p.store(out,"Synthetic local-only configuration");}System.setProperty("starhub.account.config",config.toString());
+            String operation=UUID.randomUUID().toString(),body=login(operation);FilterChain login=(req,res)->new AccountServlet().doPost((HttpServletRequest)req,(HttpServletResponse)res);
+            f.rejectConfirm.set(true);var unknown=new AtomicTransactionsTest.Capture();var first=request("/api/account",body);when(first.getRemoteAddr()).thenReturn("192.0.2.119");AtomicHttp.run(first,unknown.response,login,f.db,f.p,()->{},f.files::transientCapacity);assertEquals(503,unknown.status.get());assertEquals(1,f.count("SELECT failures FROM starhub_login_limits"));
+            f.rejectConfirm.set(false);var known=new AtomicTransactionsTest.Capture();var retry=request("/api/account",body);when(retry.getRemoteAddr()).thenReturn("192.0.2.119");AtomicHttp.run(retry,known.response,login,f.db,f.p,()->{},f.files::transientCapacity);assertEquals(401,known.status.get());verify(known.response).setHeader("X-Four-Project-Durability","dual");assertEquals(1,f.count("SELECT failures FROM starhub_login_limits"));assertEquals(1,f.count("SELECT COUNT(*) FROM starhub_login_attempts"));assertTrue(known.bytes.toString(StandardCharsets.UTF_8).contains(operation));
+            try(var available=HeavyRequestBody.read(request("/api/account",body),6*1024*1024,"/api/account")){assertNotNull(available);}assertNull(ProviderAdmission.tryEnter());
+        }finally{if(previous==null)System.clearProperty("starhub.account.config");else System.setProperty("starhub.account.config",previous);java.nio.file.Files.deleteIfExists(config);heavy.close();}free();
+    }
     @Test void providerGuestAndWorkspaceShareTheSlotBeforeLargeBodyOrSessionOrSql()throws Exception {
         var held=ProviderAdmission.tryEnter();assertNotNull(held);
         try{

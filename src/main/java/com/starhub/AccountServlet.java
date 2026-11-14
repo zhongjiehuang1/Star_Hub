@@ -25,7 +25,7 @@ public final class AccountServlet extends HttpServlet {
         if(path.isBlank())throw new IOException("Account configuration path is empty");
         Properties p=new Properties();try(InputStream i=Files.newInputStream(Paths.get(path))){p.load(i);}return p;
     }
-    static int databaseSocketTimeout(Properties p){return "true".equals(p.getProperty("storage.replicated"))?90_000:15_000;}
+    static int databaseSocketTimeout(Properties p){return "single-database".equals(p.getProperty("storage.topology"))?15_000:"true".equals(p.getProperty("storage.replicated"))?90_000:15_000;}
     static Connection db(Properties p)throws SQLException{
         if("true".equals(p.getProperty("storage.replicated"))&&"atomic".equals(p.getProperty("storage.transactionMode"))){
             Connection scoped=AtomicDatabase.borrowed(p);if(scoped!=null)return scoped;
@@ -34,23 +34,27 @@ public final class AccountServlet extends HttpServlet {
     }
     static String jdbcUrl(Properties p,String key)throws SQLException {
         String url=p.getProperty(key);if(url==null)throw new SQLException("Database URL is not configured");if(!ReplicaAuthority.enabled(p))return url;
-        String[] parts=url.split("\\?",2);java.util.List<String> parameters=new java.util.ArrayList<>();java.util.Set<String> controlled=java.util.Set.of("autoreconnect","autoreconnectforpools","reconnectattxend","allowmultiqueries","connecttimeout","sockettimeout","useserverprepstmts","cacheprepstmts","servertimezone","connectiontimezone","forceconnectiontimezonetosession");
+        String[] parts=url.split("\\?",2);java.util.List<String> parameters=new java.util.ArrayList<>();java.util.Set<String> controlled=java.util.Set.of("autoreconnect","autoreconnectforpools","reconnectattxend","allowmultiqueries","connecttimeout","sockettimeout","useserverprepstmts","cacheprepstmts","prepstmtcachesize","prepstmtcachesqllimit","holdresultsopenoverstatementclose","donttrackopenresources","servertimezone","connectiontimezone","forceconnectiontimezonetosession");
         if(parts.length==2)for(String option:parts[1].split("&")){String name;try{name=java.net.URLDecoder.decode(option.split("=",2)[0],java.nio.charset.StandardCharsets.UTF_8).toLowerCase(java.util.Locale.ROOT);}catch(IllegalArgumentException invalid){throw new SQLException("Invalid replicated JDBC option");}if(!controlled.contains(name))parameters.add(option);}
-        parameters.addAll(java.util.List.of("autoReconnect=false","autoReconnectForPools=false","reconnectAtTxEnd=false","allowMultiQueries=false","connectTimeout=3000","socketTimeout="+databaseSocketTimeout(p),"useServerPrepStmts=true","cachePrepStmts=false","connectionTimeZone=UTC","forceConnectionTimeZoneToSession=true"));return parts[0]+"?"+String.join("&",parameters);
+        boolean pooled=SingleDatabase.enabled(p)&&"true".equals(p.getProperty("storage.single.pool.enabled","false"));
+        parameters.addAll(java.util.List.of("autoReconnect=false","autoReconnectForPools=false","reconnectAtTxEnd=false","allowMultiQueries=false","connectTimeout="+(SingleDatabase.enabled(p)?2000:3000),"socketTimeout="+databaseSocketTimeout(p),"useServerPrepStmts=true","cachePrepStmts="+pooled,"connectionTimeZone=UTC","forceConnectionTimeZoneToSession=true"));
+        if(pooled)parameters.addAll(java.util.List.of("prepStmtCacheSize=64","prepStmtCacheSqlLimit=4096","holdResultsOpenOverStatementClose=false","dontTrackOpenResources=false"));return parts[0]+"?"+String.join("&",parameters);
     }
-    static Connection unscopedDb(Properties p)throws SQLException{
+    static Connection unscopedDb(Properties p)throws SQLException{return unscopedDb(p,null);}
+    static Connection unscopedDb(Properties p,ReplicaAuthority.CheckedOpen checked)throws SQLException{
+        if(checked!=null)ReplicaAuthority.validateCheckedOpen(p,checked);
         boolean replicated=ReplicaAuthority.enabled(p);FileStorage active=FileStorage.active;
         if(active!=null&&(active.replicated||replicated)){
             if(!active.replicated||!replicated)throw new SQLException("Replicated storage mode changed; restart the coordinator");
             ReplicaAuthority.sameRouting(active.config,p);
         }
         try{Class.forName("com.mysql.cj.jdbc.Driver",true,AccountServlet.class.getClassLoader());}catch(ClassNotFoundException e){throw new SQLException("Database driver unavailable",e);}
-        Properties connection=new Properties();connection.setProperty("user",p.getProperty("db.user"));connection.setProperty("password",p.getProperty("db.password"));connection.setProperty("connectTimeout","3000");connection.setProperty("socketTimeout",Integer.toString(databaseSocketTimeout(p)));
-        Connection opened=DriverManager.getConnection(jdbcUrl(p,"db.url"),connection);
+        Properties connection=new Properties();connection.setProperty("user",p.getProperty("db.user"));connection.setProperty("password",p.getProperty("db.password"));connection.setProperty("connectTimeout",SingleDatabase.enabled(p)?"2000":"3000");connection.setProperty("socketTimeout",Integer.toString(databaseSocketTimeout(p)));
+        Connection opened=SingleDatabaseConnections.open(p,"db.url",()->DriverManager.getConnection(jdbcUrl(p,"db.url"),connection));
         try{
             // Existing TIMESTAMP values are preserved; each new SQL session uses UTC.
             try(Statement timezone=opened.createStatement()){timezone.execute("SET SESSION time_zone='+00:00'");}
-            return ReplicaAuthority.checked(opened,p);
+            return checked==null?ReplicaAuthority.checked(opened,p):ReplicaAuthority.checked(opened,p,checked);
         }catch(SQLException failure){try{opened.close();}catch(SQLException ignored){}throw failure;}
     }
     static boolean activeSession(HttpSession s) {
@@ -68,7 +72,13 @@ public final class AccountServlet extends HttpServlet {
         HttpSession session=req.getSession(false);if(!activeSession(session)){respond(res,200,ModelGateway.JSON.createObjectNode().put("signedIn",false));return;}
         try {Properties p=config();long id=(Long)session.getAttribute(USER);ObjectNode out=ModelGateway.JSON.createObjectNode().put("signedIn",true).put("email",(String)session.getAttribute(EMAIL));ObjectNode keys=out.putObject("keys");
             ArrayNode ring=out.putArray("keyRing");byte[] vault=Base64.getDecoder().decode(p.getProperty("vault.key"));
-            try(Connection c=db(p)){c.setAutoCommit(false);try{Keyring.migrate(c,vault,id);c.commit();}catch(Exception e){c.rollback();throw e;}finally{c.setAutoCommit(true);}try(PreparedStatement q=c.prepareStatement("SELECT id,provider,label,nonce,ciphertext,selected FROM api_keys WHERE user_id=? ORDER BY created_at,id")){q.setLong(1,id);try(ResultSet r=q.executeQuery()){while(r.next()){String keyId=r.getString(1),provider=r.getString(2);boolean selected=r.getBoolean(6);ring.addObject().put("id",keyId).put("provider",provider).put("label",r.getString(3)).put("selected",selected);if(selected)keys.put(provider,Keyring.decrypt(id,provider,keyId,r.getBytes(4),r.getBytes(5),vault));}}}}respond(res,200,out);
+            try(Connection c=db(p)){c.setAutoCommit(false);try{Keyring.migrate(c,vault,id);c.commit();}catch(Exception e){c.rollback();throw e;}finally{c.setAutoCommit(true);}try(PreparedStatement q=c.prepareStatement("SELECT id,provider,label,nonce,ciphertext,selected FROM api_keys WHERE user_id=? ORDER BY created_at,id")){q.setLong(1,id);try(ResultSet r=q.executeQuery()){while(r.next()){String keyId=r.getString(1),provider=r.getString(2);boolean selected=r.getBoolean(6);ring.addObject().put("id",keyId).put("provider",provider).put("label",r.getString(3)).put("selected",selected);if(selected)keys.put(provider,Keyring.decrypt(id,provider,keyId,r.getBytes(4),r.getBytes(5),vault));}}}
+                if("1".equals(req.getParameter("bootstrap"))){
+                    // This bundle is meaningful only inside the existing certified request scope.
+                    Connection borrowed=AtomicDatabase.borrowed(p);if(borrowed==null)throw StorageFailure.unavailable();
+                    out.set("workspaceBootstrap",ConversationPages.load(c,id,(String)session.getAttribute("starhub.account.generation"),ModelGateway.JSON.createObjectNode().put("paginationProtocol",1).put("offset",0)));
+                }
+            }respond(res,200,out);
         }catch(Exception e){getServletContext().log("Star Hub account backend failure: "+e.getClass().getSimpleName()+(e instanceof SQLException?" SQLState="+((SQLException)e).getSQLState():""));unavailable(res);}
     }
     private byte[] hashedForSession(HttpSession s)throws Exception {try(Connection c=db(config());PreparedStatement q=c.prepareStatement("SELECT password_hash FROM users WHERE id=?")){q.setLong(1,(Long)s.getAttribute(USER));try(ResultSet r=q.executeQuery()){if(!r.next())throw new SQLException();return r.getBytes(1);}}}

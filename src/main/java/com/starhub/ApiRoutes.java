@@ -26,11 +26,12 @@ final class ApiRoutes {
     static String files(){return ModelGateway.PROVIDERS.get("openai").base+"/files";}
     static String realtime(String model){return "wss://api.openai.com/v1/realtime?model="+URLEncoder.encode(model,StandardCharsets.UTF_8);}
     static String media(JsonNode m,String task,String job){
-        if(!m.path("provider").asText().equals("openai")||!job.isEmpty())throw new ModelGateway.Problem(400,"该官方媒体接口不受支持。");
+        if(!job.isEmpty())throw new ModelGateway.Problem(400,"该官方媒体接口不受支持。");
+        if(m.path("provider").asText().equals("xai")&&m.path("id").asText().equals("voice-tts")&&task.equals("speech"))return ModelGateway.PROVIDERS.get("xai").base+"/tts";
+        if(!m.path("provider").asText().equals("openai"))throw new ModelGateway.Problem(400,"该官方媒体接口不受支持。");
         String base=ModelGateway.PROVIDERS.get("openai").base;
         switch(task){
             case "image":return base+"/images/generations";
-            case "speech":return base+"/audio/speech";
             case "transcription":return base+"/audio/transcriptions";
             case "embeddings":return base+"/embeddings";
             default:throw new ModelGateway.Problem(400,"接口类型不受支持。");

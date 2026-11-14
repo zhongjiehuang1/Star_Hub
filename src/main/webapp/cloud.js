@@ -35,22 +35,54 @@ async function workspaceRequest(data){
  }
  return sendWorkspaceRequest(data,expectedEmail,epoch);
 }
-async function sendWorkspaceRequest(data,expectedEmail,epoch=accountIdentityRevision){workspaceOwner(expectedEmail,epoch);const r=await fetch('api/workspace',{method:'POST',headers:{'Content-Type':'application/json','X-Starhub-Client':'web'},body:JSON.stringify({...data,expectedEmail})});let d=await r.json();workspaceOwner(expectedEmail,epoch);if(!r.ok){const error=Error(['CLUSTER_UNAVAILABLE','OPERATION_PENDING'].includes(d.code)?t('服务器故障，请等待恢复'):(d.error||d.message||t('账户存储失败')));error.status=r.status;error.code=d.code;if(d.code==='CLUSTER_UNAVAILABLE'||d.code==='OPERATION_PENDING')setClusterAvailability(false);throw error;}
- const durability=r.headers?.get('X-Four-Project-Durability');if(!['dual','single'].includes(durability)||(data.operationId&&['upload','deleteFile','trashFile','restoreFile','saveChat','deleteChat'].includes(data.action)&&(d.operationId!==data.operationId||d.operationState!=='COMMITTED'))){const error=Error(t('服务器故障，请等待恢复'));error.code='OPERATION_PENDING';error.operationId=data.operationId;throw error;}Object.defineProperty(d,'confirmedDurability',{value:durability,enumerable:false});return d;}
+let workspaceActivityCount=0;
+function workspaceActivity(message,done=false){
+ if(done)workspaceActivityCount=Math.max(0,workspaceActivityCount-1);
+ const element=$('workspaceActivity');if(!element)return;
+ element.textContent=message||'';element.hidden=!message&&workspaceActivityCount===0;
+ element.setAttribute('aria-busy',workspaceActivityCount>0?'true':'false');
+}
+async function sendWorkspaceRequest(data,expectedEmail,epoch=accountIdentityRevision){
+ workspaceOwner(expectedEmail,epoch);
+ // Freeze the exact body and actor before joining this tab's existing guest
+ // queue. Retry only an explicit pre-mutation memory rejection, never unknown
+ // outcomes, authentication throttles or provider dispatches.
+ const body=JSON.stringify({...data,expectedEmail});let boundedChat=data.action==='listChats',completed=false;
+ workspaceActivityCount++;workspaceActivity(t('正在读取或保存，请稍候。当前内容已保留。'));
+ try{for(let attempt=0;;attempt++){
+  if(typeof StarStore!=='undefined'){if(['listChats','listFiles','readFile'].includes(data.action)&&StarStore.whenHydrated)await StarStore.whenHydrated();else if(StarStore.whenSettled)await StarStore.whenSettled();}workspaceOwner(expectedEmail,epoch);
+  const r=await fetch('api/workspace',{method:'POST',headers:{'Content-Type':'application/json','X-Starhub-Client':'web',...(boundedChat?{'X-Starhub-Bounded-Read':'chat-v1'}:{})},body});
+  const d=await r.json();workspaceOwner(expectedEmail,epoch);
+  if(!r.ok){
+   if(boundedChat&&r.status===413&&d.code==='BOUNDED_CHAT_FALLBACK'){boundedChat=false;workspaceActivity(t('正在加载较大的聊天页面，请稍候。'));continue;}
+   const retryAfter=r.headers?.get('Retry-After'),wait=/^[1-3]$/.test(retryAfter||'')?Number(retryAfter)*1000:0;
+   if(r.status===429&&['MEMORY_BUSY','BOUNDED_READ_BUSY'].includes(d.code)&&attempt<2&&wait){workspaceActivity(t('服务器繁忙，正在等待；原请求编号和当前内容已保留。'));await new Promise(resolve=>setTimeout(resolve,wait));workspaceOwner(expectedEmail,epoch);continue;}
+   const error=Error(['CLUSTER_UNAVAILABLE','OPERATION_PENDING'].includes(d.code)?t('服务器故障，请等待恢复'):(d.error||d.message||t('账户存储失败')));error.status=r.status;error.code=d.code;
+   if(d.code==='CLUSTER_UNAVAILABLE'||d.code==='OPERATION_PENDING')setClusterAvailability(false);throw error;
+  }
+  const durability=r.headers?.get('X-Four-Project-Durability');if(!['dual','single'].includes(durability)||(data.operationId&&['upload','deleteFile','trashFile','restoreFile','saveChat','deleteChat'].includes(data.action)&&(d.operationId!==data.operationId||d.operationState!=='COMMITTED'))){const error=Error(t('服务器故障，请等待恢复'));error.code='OPERATION_PENDING';error.operationId=data.operationId;throw error;}
+  Object.defineProperty(d,'confirmedDurability',{value:durability,enumerable:false});completed=true;return d;
+ }}catch(error){
+  const unknown=!error.status||error.status>=500;
+  if(unknown&&data.operationId){error.operationId=data.operationId;error.code='OPERATION_PENDING';workspaceActivity(t('结果尚未确认，请保留当前页面和原请求编号后查询。'));}
+  else workspaceActivity(error.message||t('读取未完成，当前内容已保留。'));
+  throw error;
+ }finally{workspaceActivityCount=Math.max(0,workspaceActivityCount-1);if(completed)workspaceActivity(workspaceActivityCount?t('正在处理其他请求，请稍候。'):'');else{const element=$('workspaceActivity');if(element)element.setAttribute('aria-busy',workspaceActivityCount>0?'true':'false');}}
+}
 function forgetFileOperation(operation){
  for(const [key,value] of pendingFileOperations)if(value===operation){pendingFileOperations.delete(key);try{sessionStorage.removeItem(key);}catch{}}
  try{for(let i=sessionStorage.length-1;i>=0;i--){const key=sessionStorage.key(i);if(key?.startsWith('starhub.file-operation.')&&sessionStorage.getItem(key)===operation)sessionStorage.removeItem(key);}}catch{}
 }
 
 function serialCloud(fn){const result=cloudQueue.then(fn);cloudQueue=result.catch(()=>{});return result;}
-function cleanMessage(m){return {role:m.role,content:m.content||'',provider:m.provider||'',providerName:m.providerName||'',model:m.model||'',providerOperationId:/^[0-9a-f-]{36}$/.test(m.providerOperationId||'')?m.providerOperationId:undefined,fileIds:m.fileIds||[],imageCount:m.imageCount||0,mediaRefs:StarProviderMedia.references(m.mediaRefs||m.media||[]),imageSaveFailed:Boolean(m.imageSaveFailed),incomplete:Boolean(m.incomplete||m.revealing),reasoningSummary:m.reasoningSummary||'',thinkingSeconds:m.thinkingSeconds,details:m.details&&(m.details.webCitations||m.details.webSearchUsed)?{webCitations:m.details.webCitations||[],webSearchUsed:!!m.details.webSearchUsed,googleWidget:m.details.googleWidget||''}:undefined};}
+function cleanMessage(m){return {role:m.role,content:m.content||'',provider:m.provider||'',providerName:m.providerName||'',model:m.model||'',providerContext:m.providerContext==null?undefined:StarStore.requiredProviderContext(m),providerOperationId:/^[0-9a-f-]{36}$/.test(m.providerOperationId||'')?m.providerOperationId:undefined,fileIds:m.fileIds||[],imageCount:m.imageCount||0,mediaRefs:StarProviderMedia.references(m.mediaRefs||m.media||[]),imageSaveFailed:Boolean(m.imageSaveFailed),incomplete:Boolean(m.incomplete||m.revealing),reasoningSummary:m.reasoningSummary||'',thinkingSeconds:m.thinkingSeconds,continuationUnavailable:m.continuationUnavailable===true,details:m.details&&(m.details.webCitations||m.details.webSearchUsed)?{webCitations:m.details.webCitations||[],webSearchUsed:!!m.details.webSearchUsed,googleWidget:m.details.googleWidget||''}:undefined};}
 function chatData(c){return {draft:c.draft||'',messages:c.messages.filter(m=>typeof m.content==='string'&&(m.content||/^[0-9a-f-]{36}$/.test(m.providerOperationId||''))).map(cleanMessage)};}
 async function cloudUpload(data,name){const comma=data.indexOf(','),mime=data.slice(5,comma).split(';')[0],encoded=data.slice(comma+1);if(comma<0||!data.startsWith('data:')||!data.slice(0,comma).endsWith(';base64'))throw Error(t('不支持的文件'));return (await workspaceRequest({action:'upload',name,mime,data:encoded})).id;}
 async function readCloudFile(id){const f=await workspaceRequest({action:'readFile',id});return {...f,url:`data:${f.mime};base64,${f.data}`};}
 async function uploadSubmittedFiles(data,files,expectedEmail=accountEmail,active=()=>true){const epoch=accountIdentityRevision;function check(){workspaceOwner(expectedEmail,epoch);if(!active())throw Error('The original file conversation changed.');}check();const ids=[];for(let i=0;i<data.length;i++){check();const key=data[i];if(librarySelection.has(key))ids.push(librarySelection.get(key));else{const id=await cloudUpload(key,files[i]?.name||`attachment-${i+1}`);check();ids.push(id);}}check();librarySelection.clear();return ids;}
 async function hydrateChat(c){const email=accountEmail,epoch=accountIdentityRevision;workspaceOwner(email,epoch);for(const m of c.messages){workspaceOwner(email,epoch);if(m.fileIds?.length){let list=[];for(const id of m.fileIds){try{const file=await readCloudFile(id);workspaceOwner(email,epoch);list.push(file.url);}catch(error){workspaceOwner(email,epoch);m.attachmentOmitted=true;}}if(m.imageCount){m.images=list.slice(0,m.imageCount);m.attachments=list.slice(m.imageCount);}else m.attachments=list;}if(m.mediaRefs?.length)m.mediaRefs=StarProviderMedia.references(m.mediaRefs);if(m.imageSaveFailed)m.warning=t('图片已生成，但未能保存到文件库；请在刷新前下载图片。');}workspaceOwner(email,epoch);c.hydrated=true;}
-async function loadCloudChats(){const owner=accountEmail,epoch=accountIdentityRevision;workspaceOwner(owner,epoch);const result=await StarChatPages.collect(workspaceRequest,()=>Boolean(owner)&&accountEmail===owner&&accountIdentityRevision===epoch);workspaceOwner(owner,epoch);const resultChats=[];for(const item of result.chats){if(!item.data||!Array.isArray(item.data.messages))continue;const c={id:item.id,title:item.title,revision:item.revision,draft:item.data.draft||'',messages:item.data.messages};c.savedPayload=JSON.stringify({title:c.title,data:chatData(c)});c.savedDurability=result.confirmedDurability;c.hydrated=false;resultChats.push(c);}return resultChats;}
-async function saveCloudChats(){if(!accountEmail||!cloudReady)return;if(cloudFailed)throw Error(t('云端保存失败。刷新前请导出此对话。'));const email=accountEmail,epoch=accountIdentityRevision,queuedChats=[...chats];await serialCloud(async()=>{workspaceOwner(email,epoch);for(const c of queuedChats){workspaceOwner(email,epoch);if(!c.messages.length)continue;const data=chatData(c),signature=JSON.stringify({title:c.title,data});if(c.savedPayload===signature)continue;try{const r=await workspaceRequest({action:'saveChat',id:c.id,title:c.title,data,revision:c.revision||0});workspaceOwner(email,epoch);c.revision=r.revision;c.savedPayload=signature;c.savedDurability=r.confirmedDurability;}catch(e){if(accountEmail===email&&accountIdentityRevision===epoch){cloudFailed=true;if(e.status===401)requestReauthentication(email);else showError(e.message+t('更改仍保留在当前页面。'));}throw e;}}});}
+async function loadCloudChats(){const owner=accountEmail,epoch=accountIdentityRevision;workspaceOwner(owner,epoch);const result=await StarChatPages.collect(workspaceRequest,()=>Boolean(owner)&&accountEmail===owner&&accountIdentityRevision===epoch,typeof consumeWorkspaceBootstrap==='function'?consumeWorkspaceBootstrap():null);workspaceOwner(owner,epoch);const resultChats=[];for(const item of result.chats){if(!item.data||!Array.isArray(item.data.messages))continue;const c={id:item.id,title:item.title,revision:item.revision,draft:item.data.draft||'',messages:item.data.messages};c.savedPayload=JSON.stringify({title:c.title,data:chatData(c)});c.savedDurability=result.confirmedDurability;c.hydrated=false;resultChats.push(c);}return resultChats;}
+async function saveCloudChats(){if(!accountEmail||!cloudReady)return;if(cloudFailed)throw Error(t('云端保存失败。刷新前请导出此对话。'));const email=accountEmail,epoch=accountIdentityRevision,queuedChats=[...chats];await serialCloud(async()=>{workspaceOwner(email,epoch);for(const c of queuedChats){workspaceOwner(email,epoch);if(!c.messages.length)continue;const data=chatData(c),signature=JSON.stringify({title:c.title,data});if(c.savedPayload===signature)continue;try{const r=await workspaceRequest({action:'saveChat',id:c.id,title:c.title,data,revision:c.revision||0});workspaceOwner(email,epoch);c.revision=r.revision;c.savedPayload=signature;c.savedDurability=r.confirmedDurability;}catch(e){if(accountEmail===email&&accountIdentityRevision===epoch){if(!(e.status===429&&e.code==='MEMORY_BUSY'))cloudFailed=true;if(e.status===401)requestReauthentication(email);else showError(e.message+t('更改仍保留在当前页面。'));}throw e;}}});}
 async function saveCloudChatsConfirmed(expectedEmail,chatId){
  const epoch=accountIdentityRevision;
  if(!expectedEmail||accountEmail!==expectedEmail||!cloudReady||cloudFailed)throw Error('The original account workspace is not ready for confirmed saving.');
@@ -149,7 +181,7 @@ async function guestChatTarget(chat,expectedEmail,epoch){
 }
 
 async function accountChatsOnLogin(guest){const importOwner=accountEmail,importEpoch=accountIdentityRevision;function checkImportOwner(){workspaceOwner(importOwner);if(accountIdentityRevision!==importEpoch)throw Error('The import account changed. Guest content has been retained.');}cloudReady=false;cloudFailed=false;const cloud=await loadCloudChats();checkImportOwner();const importCandidates=guest.map(chat=>({...chat,messages:chat.messages.map(message=>({...message,fileIds:message.fileIds?.slice(),images:message.images?.slice(),attachments:message.attachments?.slice(),mediaRefs:StarProviderMedia.references(message.mediaRefs||message.media||[]),media:(message.media||[]).map(item=>({...item,mediaRef:item.mediaRef?{...item.mediaRef}:undefined}))}))}));let take=false;if(guest.some(c=>c.messages.length))take=await askImport();checkImportOwner();
- if(take){checkGuestImportable(importCandidates);const selected=importCandidates.filter(c=>c.messages.length),targets=new Map();
+ if(take){if(typeof StarStore!=='undefined'&&StarStore.whenSettled)await StarStore.whenSettled();checkImportOwner();checkGuestImportable(importCandidates);const selected=importCandidates.filter(c=>c.messages.length),targets=new Map();
   // Verify every retained target intent before the first file copy or chat save.
   for(const c of selected){checkImportOwner();const target=await guestChatTarget(c,importOwner,importEpoch);checkImportOwner();targets.set(c,{sourceChatId:c.id,target});}
   for(const c of selected){const {sourceChatId,target}=targets.get(c);c.id=target;c.revision=0;delete c.savedPayload;delete c.savedDurability;
@@ -162,9 +194,19 @@ async function accountChatsOnLogin(guest){const importOwner=accountEmail,importE
  checkImportOwner();chats=cloud;current=undefined;if(chats.length)activateChat(chats[0]);else newChat();cloudReady=true;if(take)await saveCloudChats();}
 function askImport(){return new Promise(resolve=>{const d=$('importDialog');d.oncancel=e=>e.preventDefault();$('importCheck').checked=false;$('importConfirm').onclick=()=>{const yes=$('importCheck').checked;d.close();resolve(yes);};d.showModal();});}
 async function initCloudSession(){if(!accountEmail)return false;const email=accountEmail,epoch=accountIdentityRevision;cloudReady=false;const loaded=await loadCloudChats();workspaceOwner(email,epoch);chats=loaded;current=undefined;if(chats.length)activateChat(chats[0]);else newChat();cloudReady=true;return true;}
+let serverIdentityState='connecting',serverIdentityRequest=0;
+function renderServerIdentity(){
+ const badge=$('serverBadge');badge.hidden=false;
+ const confirmed=serverIdentityState==='connected'&&(displayedServerId===1||displayedServerId===2);
+ badge.textContent=confirmed?(language==='en'?`Connected to server ${displayedServerId}`:`当前连接服务器 ${displayedServerId}`):(serverIdentityState==='connecting'?(language==='en'?'Connecting to server':'正在连接服务器'):(language==='en'?'Server unavailable':'服务器暂不可用'));
+ badge.classList.toggle('is-connected',confirmed);
+ if(confirmed)badge.dataset.serverId=String(displayedServerId);else delete badge.dataset.serverId;
+}
 async function loadServerIdentity(){
- const badge=$('serverBadge');badge.hidden=true;
- try{const response=await fetch('api/server',{cache:'no-store',credentials:'same-origin'});if(!response.ok)return;const info=await response.json();if(!Number.isSafeInteger(info.serverId)||info.serverId<1)return;displayedServerId=info.serverId;badge.textContent=t('服务器 {0}',displayedServerId);badge.hidden=false;}catch{displayedServerId=null;}
+ const request=++serverIdentityRequest;displayedServerId=null;serverIdentityState='connecting';renderServerIdentity();
+ try{const response=await fetch('api/server',{cache:'no-store',credentials:'same-origin'});if(!response.ok)throw Error('Unavailable');const info=await response.json();if(info.serverId!==1&&info.serverId!==2)throw Error('Invalid identity');if(request!==serverIdentityRequest)return;displayedServerId=info.serverId;serverIdentityState='connected';}
+ catch{if(request!==serverIdentityRequest)return;displayedServerId=null;serverIdentityState='unavailable';}
+ renderServerIdentity();
 }
 function renderFileLibraryStatus(){
  if(!fileLibraryResult)return;
@@ -226,8 +268,9 @@ $('fileLibraryPrevious').onclick=()=>refreshFiles(Math.max(1,fileLibraryPage-1))
 $('libraryUpload').onchange=async()=>{const files=[...$('libraryUpload').files],email=accountEmail,epoch=accountIdentityRevision;const check=()=>workspaceOwner(email,epoch);$('libraryMessage').textContent=t('上传中…');try{check();for(const f of files){check();if(f.size>4*1024*1024)throw Error(t('每个文件最多 4 MiB。'));const data=await readFileData(f);check();await cloudUpload(data,f.name);check();} $('libraryMessage').textContent=t('已上传。');await refreshFiles(1);}catch(e){if(accountEmail===email&&accountIdentityRevision===epoch)$('libraryMessage').textContent=e.message;}finally{if(accountEmail===email&&accountIdentityRevision===epoch)$('libraryUpload').value='';}};
 $('useLibraryFiles').onclick=async()=>{const email=accountEmail,epoch=accountIdentityRevision,ids=[...fileLibraryChecked];const check=()=>workspaceOwner(email,epoch);if(!ids.length||ids.length>4){$('libraryMessage').textContent=t('请选择 1–4 张图片。');return;}try{check();let files=[];for(const id of ids){const file=await readCloudFile(id);check();files.push({...file,id});}check();if(files.some(f=>!['image/png','image/jpeg','image/webp'].includes(f.mime))||files.reduce((n,f)=>n+atob(f.data).length,0)>4*1024*1024)throw Error(t('聊天支持 1–4 张 PNG、JPEG 或 WebP 图片，总计不超过 4 MiB。'));if(!selectedModel()?.inputs.includes('image')||$('task').value!=='chat')throw Error(t('请先选择支持图片的聊天模型。'));newChat();const transfer=new DataTransfer();librarySelection.clear();for(const f of files){const bytes=Uint8Array.from(atob(f.data),c=>c.charCodeAt(0));transfer.items.add(new File([bytes],f.name,{type:f.mime}));librarySelection.set(f.url,f.id);}$('inputFile').files=transfer.files;$('inputFile').dispatchEvent(new Event('change'));$('libraryDialog').close();}catch(e){$('libraryMessage').textContent=e.message;}};
 document.addEventListener('starhub:account-changed',()=>{fileLibraryRequest++;fileLibraryEpoch=null;fileLibraryResult=null;fileLibraryChecked.clear();librarySelection.clear();$('libraryFiles').replaceChildren();for(const id of ['libraryUsage','fileLibraryPageInfo','fileLibrarySelection','libraryMessage'])$(id).textContent='';});
-document.addEventListener('starhub:languagechanged',()=>{renderFileLibraryStatus();if(displayedServerId!==null)$('serverBadge').textContent=t('服务器 {0}',displayedServerId);});
+document.addEventListener('starhub:languagechanged',()=>{renderFileLibraryStatus();renderServerIdentity();});
 loadServerIdentity();
+window.addEventListener('pageshow',event=>{if(event.persisted)loadServerIdentity();});
 
 checkClusterHealth();
 setInterval(()=>{if(!document.hidden)checkClusterHealth();},15000);

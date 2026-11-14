@@ -148,3 +148,30 @@ html[lang=en] .prompt-card small{font-size:11px}
 @media(max-width:520px){.server-badge{font-size:9px;padding:3px 5px}.header-left{gap:6px}.header-left .workspace-title,.header-left .divider{display:none}.file-library-pagination{gap:5px;font-size:10px}.file-library-pagination button{font-size:10px}}
 
 .cluster-unavailable{padding:12px 18px;background:#fff3df;color:#7b4a0f;border-bottom:1px solid #e8d4af;font-size:13px;text-align:center}
+
+/* The visible connection indicator is confirmed application identity, not catalog readiness. */
+.header-right .service-status{display:none}
+.topbar{height:auto;min-height:78px;padding-top:12px;padding-bottom:12px;gap:12px;flex-wrap:wrap}
+.header-left{min-width:0}.header-right{margin-left:auto;justify-content:flex-end;flex-wrap:wrap;gap:10px}#accountButton{max-width:210px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.server-badge{display:inline-flex;align-items:center;gap:7px;white-space:nowrap;font-size:11px;font-weight:400;padding:0;border:0;border-radius:0;color:#696b78;background:none;line-height:1.5}
+.server-badge::before{content:"";flex:none;width:6px;height:6px;border-radius:50%;background:#9ba0ac}
+.server-badge.is-connected::before{background:#34856b;animation:server-identity-breathe 3.2s ease-in-out infinite}
+.language-toggle,#setupDialog .setup-language .language-toggle{appearance:none;border:0;border-radius:0;box-shadow:none;background:none;color:#6e637e;font:inherit;font-size:12px;font-weight:400;padding:8px 0;min-height:36px;cursor:pointer;line-height:1.5}
+.language-toggle:hover{text-decoration:underline;text-underline-offset:3px}
+.language-toggle:focus-visible{outline:2px solid #9c89ce;outline-offset:4px}
+#setupDialog .setup-language{display:flex;justify-content:flex-end;margin:8px 0}
+@keyframes server-identity-breathe{0%,100%{opacity:1}50%{opacity:.32}}
+@media(max-width:1000px){.topbar{align-items:flex-start}.header-right{gap:8px}.service-status{display:none}}
+@media(max-width:760px){.topbar{min-height:64px;padding:10px 17px;gap:6px}.header-right{min-width:0}.header-right .server-badge{font-size:10px}.language-toggle{font-size:11px}.topbar{position:relative;z-index:6}}
+@media(max-width:520px){.topbar{display:grid;grid-template-columns:auto minmax(0,1fr) auto auto;align-items:center}.header-left{grid-column:1/3;grid-row:1;gap:6px}.header-right{display:contents}.header-right .server-badge{grid-column:3/5;grid-row:1;justify-self:end;font-size:10px}.header-right .language-toggle{grid-column:1;grid-row:2;justify-self:start}.header-right #accountButton{grid-column:2;grid-row:2;justify-self:start;max-width:100%;min-width:0}.header-right #accountLogout{grid-column:3;grid-row:2;justify-self:end}.header-right #exportChat{grid-column:4;grid-row:2;justify-self:end}.header-left .provider-badge{display:none}}
+@media(prefers-reduced-motion:reduce){.server-badge.is-connected::before{animation:none}}
+
+/* Quiet, bounded interaction feedback. No continuous animation work. */
+.prompt-card,.model-card{position:relative;transition:border-color 160ms ease,box-shadow 160ms ease,transform 160ms ease}
+@media (hover:hover) and (pointer:fine){.prompt-card:hover,.model-card:hover{border-color:#b9b0dc;box-shadow:0 5px 20px #74639212;background-image:radial-gradient(circle 180px at var(--sense-x,50%) var(--sense-y,50%),#b9a8e812,transparent);background-attachment:fixed}}
+button:focus-visible,a:focus-visible,select:focus-visible{outline:2px solid #8872c7;outline-offset:3px}
+button:active:not(:disabled){transform:translateY(1px)}
+@media(prefers-reduced-motion:reduce){.prompt-card,.model-card,button{transition:none!important;animation:none!important;transform:none!important;background-image:none!important}}
+
+/* Advanced library controls stay available without crowding the default view. */
+#libraryMoreFilters{margin:10px 0}#libraryMoreFilters summary{cursor:pointer;font-size:13px;font-weight:600;padding:8px 0}.more-filter-fields{display:flex;flex-direction:column;gap:7px;padding-top:8px}

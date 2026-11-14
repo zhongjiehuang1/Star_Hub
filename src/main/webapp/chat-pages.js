@@ -1,10 +1,10 @@
 (function(root,factory){'use strict';if(typeof module==='object'&&module.exports)module.exports=factory();else root.StarChatPages=factory();})(typeof globalThis!=='undefined'?globalThis:this,function(){
  'use strict';
- async function collect(request,isCurrentOwner=()=>true){
+ async function collect(request,isCurrentOwner=()=>true,initialPage=null){
   const chats=[],ids=new Set();let offset=0,snapshot=null,total=null,durability='dual';
   for(let page=0;page<500;page++){
    if(!isCurrentOwner())throw Error('The account changed while conversations were loading.');
-   const result=await request({action:'listChats',paginationProtocol:1,offset,...(snapshot?{snapshot}:{})});
+   const result=page===0&&initialPage!==null?initialPage:await request({action:'listChats',paginationProtocol:1,offset,...(snapshot?{snapshot}:{})});
    if(!isCurrentOwner())throw Error('The account changed while conversations were loading.');
    if(result.paginationProtocol!==1||!/^[0-9a-f]{64}$/.test(result.snapshot||'')||!Number.isSafeInteger(result.total)||result.total<0||result.total>500
       ||!Array.isArray(result.chats)||result.chats.length>4||!['dual','single'].includes(result.confirmedDurability))throw Error('Conversation page could not be confirmed.');

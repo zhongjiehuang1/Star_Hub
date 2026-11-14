@@ -1,15 +1,15 @@
-# Model settings — 28 October 2026
+# Model settings
 
-The browser and server share per-model parameter definitions from the catalogue. The interface shows supported fields only. The backend rejects unknown fields, out-of-range values and invalid conditional combinations. Changing models or tasks resets settings; omitted values use provider defaults.
+The browser and server share per-model parameter definitions. The backend rejects unknown fields, out-of-range values and invalid conditional combinations. Omitted values use provider defaults.
 
 | Capability | Implemented controls |
 | --- | --- |
-| Chat | Seven providers; native authentication, reasoning, sampling, output limits and structured output, subject to each model's constraints |
-| Images | GPT Image 2.5 Sunburst / Flare; size, quality, background, output format, compression and count; text-to-image only |
-| Speech | gpt-4o-mini-tts; official voices, speed, style and audio format |
-| Transcription | gpt-4o-transcribe, gpt-4o-mini-transcribe and whisper-1; language, prompt, temperature and per-model formats |
-| Embeddings | text-embedding-3-small / large; dimensions and encoding |
-| Batches | GPT-4.1 / Mini and text-embedding-3-small / large; corresponding model settings |
-| Realtime voice | gpt-realtime-2.1; voice, instructions, output limit and noise reduction; fixed PCM format |
+| Chat | Seven official providers; model-specific input, reasoning, output and search controls |
+| Images | GPT Image 2.6 Sunburst; text-to-image and supported settings |
+| Speech | xAI Voice API; voice and speed, xAI API key required |
+| Transcription | GPT-Transcribe; audio upload |
+| Embeddings | text-embedding-3-large; dimensions and encoding |
+| Batch | GPT-6.1 Sol and text-embedding-3-large |
+| Realtime voice | GPT-Realtime-2.1; voice and realtime controls |
 
-The source viewer includes `Parameters.java`, the actual request adapters and `parameters.js`. Catalogue details provide official parameter references. Parameter-contract tests do not establish an account's live model entitlements.
+The xAI Voice API contract was tested with local stubs, not a live billed request. Account availability and access must be verified separately.

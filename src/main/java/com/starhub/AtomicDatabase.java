@@ -11,6 +11,10 @@ final class AtomicDatabase {
     static final long MAX_COMPETING_TRANSACTION_BYTES=Math.max(MAX_CHUNK_TRANSACTION_BYTES,
         2*(WorkspaceMutationBudget.MAX_CHAT_UTF8_BYTES+WorkspaceMutationBudget.MAX_TITLE_UTF8_BYTES)+AtomicHttp.MAX_MUTATION_RECEIPT_ROW_BYTES);
     @FunctionalInterface interface Connections { Connection open()throws Exception; }
+    @FunctionalInterface interface LeasedConnections extends Connections {
+        Connection open(ReplicaAuthority.Lease lease)throws Exception;
+        @Override default Connection open()throws Exception {throw new SQLException("An explicit lease is required by this connection factory");}
+    }
     @FunctionalInterface interface Work<T> { T run(Connection connection)throws Exception; }
     interface Authority {
         ReplicaAuthority.Lease acquire()throws SQLException;
@@ -28,11 +32,20 @@ final class AtomicDatabase {
     private volatile boolean closing;
 
     AtomicDatabase(Properties config)throws Exception {
-        this(config,()->AccountServlet.unscopedDb(config),new Authority(){
+        this(config,productionConnections(config),new Authority(){
             public ReplicaAuthority.Lease acquire()throws SQLException{return ReplicaAuthority.lease(config);}
             public void unchanged(ReplicaAuthority.Lease lease)throws SQLException{ReplicaAuthority.unchanged(config,lease);}
             public void confirm(ReplicaAuthority.Lease lease,String gtid,String operation)throws SQLException{ReplicaAuthority.confirm(config,lease,gtid,operation);}
         });
+    }
+    private static Connections productionConnections(Properties config){
+        Properties routing=ReplicaAuthority.checkedRouting(config);
+        return new LeasedConnections(){
+            public Connection open()throws Exception{return AccountServlet.unscopedDb(config);}
+            public Connection open(ReplicaAuthority.Lease lease)throws Exception{
+                return AccountServlet.unscopedDb(config,ReplicaAuthority.bindCheckedOpen(config,lease,routing));
+            }
+        };
     }
     AtomicDatabase(Properties config,Connections connections,Authority authority)throws Exception {
         this.config=config;this.connections=connections;this.authority=authority;
@@ -65,12 +78,16 @@ final class AtomicDatabase {
     }
     Connection current()throws SQLException {Scope scope=CURRENT.get();if(scope==null||scope.database!=this)throw new SQLException("No atomic request scope");return scope.connection;}
 
-    Scope begin(String operation)throws Exception {
+    Scope begin(String operation)throws Exception {return begin(operation,5000);}
+    // Admission precedes authority acquisition and all SQL; timed locking honors FIFO fairness.
+    Scope begin(String operation,long admissionMillis)throws Exception {
         if(closing)throw StorageFailure.unavailable();
         if(CURRENT.get()!=null)throw new SQLException("Overlapping atomic scope");
-        if(!writer.tryLock())throw StorageFailure.pending();
+        try{if(!writer.tryLock(admissionMillis,java.util.concurrent.TimeUnit.MILLISECONDS))throw StorageFailure.writerBusy();}
+        catch(InterruptedException interrupted){Thread.currentThread().interrupt();throw StorageFailure.writerBusy();}
+        if(closing){writer.unlock();throw StorageFailure.unavailable();}
         ReplicaAuthority.Lease lease;Connection connection;
-        try{lease=authority.acquire();connection=connections.open();}catch(Exception failure){writer.unlock();throw failure;}
+        try{lease=authority.acquire();connection=connections instanceof LeasedConnections leased?leased.open(lease):connections.open();}catch(Exception failure){writer.unlock();throw failure;}
         try {
             connection.setAutoCommit(false);connection.setTransactionIsolation(Connection.TRANSACTION_READ_COMMITTED);
             authority.unchanged(lease);
@@ -78,14 +95,16 @@ final class AtomicDatabase {
                 if(statement.executeUpdate()!=1)throw new SQLException("Atomic schema migration is required");
             }
             Scope scope=new Scope(this,connection,lease,operation);CURRENT.set(scope);return scope;
-        }catch(Exception failure){try{connection.rollback();}catch(Exception ignored){}try{connection.close();}catch(Exception ignored){}writer.unlock();throw failure;}
+        }catch(Exception failure){SingleDatabaseConnections.invalidate(connection);try{connection.rollback();}catch(Exception ignored){}try{connection.close();}catch(Exception ignored){}writer.unlock();throw failure;}
     }
     <T>T run(String operation,Work<T> work)throws Exception {
         if(inside())return work.run(current());
         for(int attempt=0;attempt<3;attempt++){
-            try(Scope scope=begin(operation)){
-                T result=work.run(scope.connection);scope.commit();return result;
-            }catch(SQLException failure){if(!knownRollback(failure)||attempt==2)throw failure;}
+            Scope active=null;
+            try{
+                active=begin(operation);
+                try(Scope scope=active){T result=work.run(scope.connection);scope.commit();return result;}
+            }catch(SQLException failure){if((SingleDatabase.enabled(config)&&active!=null&&active.committing)||!knownRollback(failure)||attempt==2)throw failure;}
         }
         throw StorageFailure.pending();
     }
@@ -258,8 +277,15 @@ final class AtomicDatabase {
         }
         void commit()throws Exception {
             if(rollbackOnly)throw new SQLException("Atomic request was rolled back");
-            authority.unchanged(lease);committing=true;
-            connection.commit();committed=true;
+            try {
+                authority.unchanged(lease);
+                if(SingleDatabase.enabled(database.config))SingleDatabase.verify(connection,database.config);
+                committing=true;connection.commit();committed=true;
+                if(SingleDatabase.enabled(database.config)){
+                    SingleDatabase.verify(connection,database.config);authority.unchanged(lease);
+                    CONFIRMED.set(new Confirmation(operation,lease));return;
+                }
+            }catch(Exception failure){SingleDatabaseConnections.invalidate(connection);throw failure;}
             String gtid;
             try(Statement q=connection.createStatement();ResultSet r=q.executeQuery("SELECT @@global.gtid_executed")){if(!r.next()||(gtid=r.getString(1))==null||gtid.isBlank())throw new SQLException("Durable transaction identity unavailable");}
             authority.confirm(lease,gtid,operation);
@@ -267,7 +293,7 @@ final class AtomicDatabase {
         }
         public void close()throws SQLException {
             if(closed)return;closed=true;CURRENT.remove();
-            try{if(!committed)connection.rollback();}finally{try{connection.close();}finally{writer.unlock();}}
+            try{if(!committed)connection.rollback();}catch(SQLException failure){SingleDatabaseConnections.invalidate(connection);throw failure;}finally{try{connection.close();}finally{writer.unlock();}}
         }
     }
 }

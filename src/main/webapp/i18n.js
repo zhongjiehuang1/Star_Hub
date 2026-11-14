@@ -55,8 +55,21 @@ function localizedCatalog(raw){
   if(language==='en')for(const model of copy.models){const source=raw.models.find(m=>m.uid===model.uid);if(source.descriptionEn)model.description=source.descriptionEn;}
   return copy;
 }
+function syncLanguageControls(){
+  for(const id of ['language','setupLanguage']){
+    const control=document.getElementById(id);if(!control)continue;
+    control.textContent=language==='en'?'中文':'English';
+    control.lang=language==='en'?'zh':'en';
+    control.setAttribute('aria-label',language==='en'?'Switch interface language to 中文':'切换界面语言为 English');
+  }
+}
 function setLanguage(next){
-  language=next==='zh'?'zh':'en';for(const id of ['language','setupLanguage']){const control=document.getElementById(id);if(control){control.value=language;control.setAttribute('aria-label',language==='en'?'Interface language':'界面语言');}}StarStore.write('language',language);translateInterface();
+  language=next==='zh'?'zh':'en';StarStore.write('language',language);translateInterface();syncLanguageControls();
   document.dispatchEvent(new CustomEvent('starhub:languagechanged'));
 }
-document.addEventListener('DOMContentLoaded',()=>{translateInterface();for(const id of ['language','setupLanguage']){const control=document.getElementById(id);control.value=language;control.setAttribute('aria-label',t('界面语言'));control.addEventListener('change',()=>setLanguage(control.value));}});
+document.addEventListener('DOMContentLoaded',()=>{
+  translateInterface();syncLanguageControls();
+  for(const id of ['language','setupLanguage']){
+    const control=document.getElementById(id);if(control)control.addEventListener('click',()=>setLanguage(language==='en'?'zh':'en'));
+  }
+});

@@ -35,13 +35,13 @@ final class ModelGateway {
 
     private static Map<String, Provider> providers() {
         Map<String, Provider> all = new LinkedHashMap<>();
-        add(all, "openai", "OpenAI", "openai", "https://api.openai.com/v1", "gpt-4.1-mini", "gpt-4.1");
-        add(all, "anthropic", "Claude", "anthropic", "https://api.anthropic.com/v1", "claude-sonnet-4-5", "claude-haiku-4-5");
-        add(all, "gemini", "Gemini", "gemini", "https://generativelanguage.googleapis.com/v1beta", "gemini-3.8-flash", "gemini-3.5-flash-lite", "gemini-2.5-flash");
-        add(all, "deepseek", "DeepSeek", "openai", "https://api.deepseek.com/v1", "deepseek-flash", "deepseek-v4-pro");
-        add(all, "qwen", "通义千问", "openai", "https://dashscope.aliyuncs.com/compatible-mode/v1", "qwen-plus", "qwen-flash", "qwen-max");
-        add(all, "moonshot", "Kimi", "openai", "https://api.moonshot.cn/v1", "kimi-k2.5");
-        add(all, "xai", "xAI", "openai", "https://api.x.ai/v1", "grok-4");
+        add(all, "openai", "OpenAI", "openai", "https://api.openai.com/v1", "gpt-6.1-sol", "gpt-6-astra");
+        add(all, "anthropic", "Claude", "anthropic", "https://api.anthropic.com/v1", "claude-fable-5-2");
+        add(all, "gemini", "Gemini", "gemini", "https://generativelanguage.googleapis.com/v1beta", "gemini-4-carbon");
+        add(all, "deepseek", "DeepSeek", "openai", "https://api.deepseek.com/v1", "deepseek-flash");
+        add(all, "qwen", "通义千问", "openai", "https://dashscope.aliyuncs.com/compatible-mode/v1", "qwen3.8-max");
+        add(all, "moonshot", "Kimi", "openai", "https://api.moonshot.cn/v1", "kimi-k3.1-pro");
+        add(all, "xai", "xAI", "openai", "https://api.x.ai/v1", "grok-4.7");
         return Collections.unmodifiableMap(all);
     }
     private static void add(Map<String, Provider> all, String id, String name, String protocol, String base, String... models) {
@@ -80,6 +80,22 @@ final class ModelGateway {
             if (!(role.equals("user") || role.equals("assistant")) || !content.isTextual() || content.asText().isBlank())
                 throw new Problem(400, "消息必须包含 user / assistant 角色和非空文本。");
             total += content.asText().length();
+            JsonNode reason=msg.path("providerReasoning");
+            if (!reason.isMissingNode()) {
+                if (!(p.id.equals("moonshot")&&KimiContext.supportsModel(model)) || !role.equals("assistant") || !reason.isObject()
+                        || !reason.path("provider").asText().equals("moonshot")
+                        || !reason.path("model").asText().equals(model)
+                        || !msg.path("provider").asText().equals("moonshot")
+                        || !msg.path("model").asText().equals(model)
+                        || !reason.path("content").isTextual() || reason.path("content").asText().isBlank()
+                        || reason.path("content").asText().length()>100000)
+                    throw new Problem(400, "思考记录与当前模型不匹配；请新建对话。 ");
+                total += reason.path("content").asText().length();
+            } else if (p.id.equals("moonshot") && KimiContext.supportsModel(model) && role.equals("assistant")
+                    && (!msg.path("provider").isTextual() || !msg.path("model").isTextual()
+                        || (msg.path("provider").asText().equals("moonshot") && msg.path("model").asText().equals(model)))) {
+                throw new Problem(400, "原对话缺少此模型所需的思考记录；请新建对话。 ");
+            }
         }
         String system = request.path("system").asText("").trim();
         String zoneName = request.path("timeZone").asText("UTC");
@@ -117,7 +133,11 @@ final class ModelGateway {
                 headers.put("Authorization", "Bearer " + key);
                 if (!system.isEmpty()) list.addObject().put("role", "system").put("content", system);
             }
-            for (JsonNode msg : messages) list.addObject().put("role", msg.path("role").asText()).put("content", msg.path("content").asText());
+            for (JsonNode msg : messages) {
+                ObjectNode entry=list.addObject().put("role", msg.path("role").asText()).put("content", msg.path("content").asText());
+                if (p.id.equals("moonshot") && KimiContext.supportsModel(model) && msg.path("providerReasoning").isObject())
+                    entry.put("reasoning_content",msg.path("providerReasoning").path("content").asText());
+            }
         }
         if (!effort.isEmpty()) {
             String mode = item.path("reasoningMode").asText();
@@ -143,14 +163,13 @@ final class ModelGateway {
             }
         }
         boolean search=request.path("webSearch").asBoolean(false);
-        boolean deepseekSearch=search&&p.id.equals("deepseek")&&model.equals("deepseek-v4-pro");
-        boolean xaiSearch=search&&p.id.equals("xai")&&model.equals("grok-4.7");
-        boolean responses = ApiRoutes.responses(p,model)||deepseekSearch||xaiSearch;
+        boolean xaiSearch=search&&p.id.equals("xai")&&java.util.Set.of("grok-4.7","grok-4.6").contains(model);
+        boolean responses = ApiRoutes.responses(p,model)||xaiSearch;
         if(search){
             if(responses)body.putArray("tools").addObject().put("type","web_search");
             else if(p.id.equals("gemini"))body.putArray("tools").addObject().putObject("google_search");
             else if(p.id.equals("anthropic"))body.putArray("tools").addObject().put("type","web_search_20250305").put("name","web_search").put("max_uses",5);
-            else if(p.id.equals("qwen")&&Set.of("qwen3.8-max","qwen3.8-flash","qwen3.7-plus").contains(model))body.put("enable_search",true);
+            else if(p.id.equals("qwen")&&java.util.Set.of("qwen3.8-max","qwen3.8-flash").contains(model))body.put("enable_search",true);
             else throw new Problem(400,"当前模型的联网搜索尚未接入，请关闭搜索或选择其他模型。");
         }
         if (responses) {
@@ -168,7 +187,7 @@ final class ModelGateway {
         Parameters.chat(body,parameters,modelInfo,p,responses);
         if(responses)body.put("store",false);
         if(stream && !p.protocol.equals("gemini"))body.put("stream",true);
-        return new Prepared(p,model,URI.create(deepseekSearch||xaiSearch?p.base+"/responses":ApiRoutes.chat(p,model,stream)),headers,body,parameters,responses);
+        return new Prepared(p,model,URI.create(xaiSearch?p.base+"/responses":ApiRoutes.chat(p,model,stream)),headers,body,parameters,responses);
     }
     static final class Prepared {
         final Provider provider; final String model; final URI uri; final Map<String,String> headers;
@@ -223,6 +242,11 @@ final class ModelGateway {
         }
         if (answer.toString().isBlank()) throw new Problem(502, "服务商未返回文本，可能触发内容过滤或该模型不支持文本对话。");
         ObjectNode out = JSON.createObjectNode().put("text", answer.toString()).put("provider", p.id).put("model", model);
+        if (p.id.equals("moonshot") && KimiContext.supportsModel(model)) {
+            JsonNode reason=response.path("choices").path(0).path("message").path("reasoning_content");
+            if (!reason.isTextual() || reason.asText().isBlank() || reason.asText().length()>100000) out.put("continuationUnavailable",true);
+            else out.putObject("providerReasoning").put("provider","moonshot").put("model",model).put("content",reason.asText());
+        }
         if (usage.isObject()) out.set("usage", usage);
         ObjectNode details=out.putObject("details");
         if(parameters.has("logprobs")||parameters.has("top_logprobs")){

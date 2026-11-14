@@ -35,7 +35,12 @@ public final class GuestSessionServlet extends HttpServlet {
             synchronized(session){session.setAttribute(IDENTITY,reply.identity());}
             res.setHeader("X-Four-Project-Durability",reply.durability());res.setHeader("X-Four-Project-Degraded",Boolean.toString(reply.durability().equals("single")));
             send(res,200,reply.body());
-        }catch(StorageFailure failed){send(res,failed.status,ModelGateway.JSON.createObjectNode().put("code",failed.code).put("error",failed.getMessage()));}
+        }catch(StorageFailure failed){
+            ObjectNode failure=ModelGateway.JSON.createObjectNode().put("code",failed.code).put("error",failed.getMessage());
+            if(failed.status==429)res.setHeader("Retry-After","1");
+            if("ATOMIC_WRITER_BUSY".equals(failed.code))failure.put("state","NOT_STARTED").put("operationState","NOT_STARTED").put("operationId",AtomicGuestStorage.operationId(input));
+            send(res,failed.status,failure);
+        }
         catch(Exception unknown){send(res,503,ModelGateway.JSON.createObjectNode().put("code","GUEST_OPERATION_PENDING").put("state","UNKNOWN").put("operationId",AtomicGuestStorage.operationId(input)).put("error","访客数据结果尚未确认，请保留当前页面并使用原操作重试。"));}
         }
     }

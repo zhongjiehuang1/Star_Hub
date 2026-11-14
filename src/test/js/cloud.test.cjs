@@ -3,7 +3,7 @@ const root=path.join(__dirname,'../../main/webapp');
 function fixture(handler,serverInfo={serverId:2},environment={}){
  const elements=new Map(),requests=[],stored=new Map();
  class Element{
-  constructor(){this.children=[];this.attributes={};this.textContent='';this.hidden=true;this.disabled=false;this.checked=false;}
+  constructor(){this.children=[];this.attributes={};this.textContent='';this.hidden=true;this.disabled=false;this.checked=false;this.dataset={};const classes=new Set();this.classList={toggle(key,on){if(on)classes.add(key);else classes.delete(key);},contains:key=>classes.has(key)};}
   append(...items){this.children.push(...items);}
   replaceChildren(...items){this.children=[...items];}
   setAttribute(k,v){this.attributes[k]=v;}
@@ -11,9 +11,9 @@ function fixture(handler,serverInfo={serverId:2},environment={}){
   close(){this.open=false;}
  }
  const element=id=>{if(!elements.has(id))elements.set(id,new Element());return elements.get(id);};
- const context=vm.createContext({StarProviderMedia:{references:require('../../main/webapp/provider-media.js').references,release(){}},console,setInterval(){},crypto:require('node:crypto').webcrypto,TextEncoder,atob:s=>Buffer.from(s,'base64').toString('binary'),btoa:s=>Buffer.from(s,'binary').toString('base64'),sessionStorage:{getItem(k){return stored.get(k)||null;},setItem(k,v){stored.set(k,v);},removeItem(k){stored.delete(k);}},accountEmail:'owner@example.test',accountIdentityRevision:0,$:element,
-  document:{createElement:()=>new Element(),createTextNode:text=>({textContent:text}),addEventListener(){}},
-  fetch:async(url,options)=>{if(url==='api/server')return {ok:true,json:async()=>serverInfo};if(url==='api/cluster-health')return {ok:true,json:async()=>({status:'ready'})};const request=JSON.parse(options.body);requests.push(request);const value=await handler(request);return value?.__http?{ok:false,status:value.__http,json:async()=>value.body}:{ok:true,status:200,headers:{get:name=>name==='X-Four-Project-Durability'?(Object.hasOwn(value||{},'__proof')?value.__proof:'dual'):null},json:async()=>{let result=request.action==='reserveUpload'&&!value?.state?{...value,state:'RESERVED'}:value;if(result&&request.operationId&&['upload','deleteFile','trashFile','restoreFile','saveChat','deleteChat'].includes(request.action))result={...result,operationId:request.operationId,operationState:'COMMITTED'};return result;}};},confirm:()=>true,...environment});
+ const context=vm.createContext({StarProviderMedia:{references:require('../../main/webapp/provider-media.js').references,release(){}},console,setInterval(){},setTimeout,crypto:require('node:crypto').webcrypto,TextEncoder,atob:s=>Buffer.from(s,'base64').toString('binary'),btoa:s=>Buffer.from(s,'binary').toString('base64'),sessionStorage:{getItem(k){return stored.get(k)||null;},setItem(k,v){stored.set(k,v);},removeItem(k){stored.delete(k);}},accountEmail:'owner@example.test',accountIdentityRevision:0,$:element,
+  document:{createElement:()=>new Element(),createTextNode:text=>({textContent:text}),addEventListener(){}},window:{addEventListener(){}},language:'en',
+  fetch:async(url,options)=>{if(url==='api/server')return {ok:true,json:async()=>serverInfo};if(url==='api/cluster-health')return {ok:true,json:async()=>({status:'ready'})};const request=JSON.parse(options.body);requests.push(request);const value=await handler(request);return value?.__http?{ok:false,status:value.__http,headers:{get:name=>name==='Retry-After'?value.__retryAfter:null},json:async()=>value.body}:{ok:true,status:200,headers:{get:name=>name==='X-Four-Project-Durability'?(Object.hasOwn(value||{},'__proof')?value.__proof:'dual'):null},json:async()=>{let result=request.action==='reserveUpload'&&!value?.state?{...value,state:'RESERVED'}:value;if(result&&request.operationId&&['upload','deleteFile','trashFile','restoreFile','saveChat','deleteChat'].includes(request.action))result={...result,operationId:request.operationId,operationState:'COMMITTED'};return result;}};},confirm:()=>true,...environment});
  vm.runInContext(fs.readFileSync(path.join(root,'i18n-data.js'),'utf8'),context);
  vm.runInContext("function t(key,...args){return (UI_EN[key]||key).replace(/\\{(\\d+)\\}/g,(_,n)=>args[n]);}",context);
  vm.runInContext(fs.readFileSync(path.join(root,'cloud.js'),'utf8'),context);
@@ -46,9 +46,8 @@ test('a delayed older request cannot replace the more recent page',async()=>{
  assert.equal(f.element('fileLibraryPageInfo').textContent,'101–200 of 6000 files · Page 2 of 60');
 });
 test('server badge only displays an explicit allowed server number',async()=>{
- const valid=fixture(()=>page(1));await valid.run('loadServerIdentity()');assert.equal(valid.element('serverBadge').hidden,false);assert.equal(valid.element('serverBadge').textContent,'Server 2');
- for(const id of [3,10]){const f=fixture(()=>page(1),{serverId:id});await f.run('loadServerIdentity()');assert.equal(f.element('serverBadge').textContent,`Server ${id}`);}
- for(const invalid of [{serverId:0},{serverId:'2'},{}]){const f=fixture(()=>page(1),invalid);await f.run('loadServerIdentity()');assert.equal(f.element('serverBadge').hidden,true);}
+ for(const id of [1,2]){const f=fixture(()=>page(1),{serverId:id});await f.run('loadServerIdentity()');const badge=f.element('serverBadge');assert.equal(badge.hidden,false);assert.equal(badge.textContent,`Connected to server ${id}`);assert.equal(badge.dataset.serverId,String(id));assert.equal(badge.classList.contains('is-connected'),true);f.run("language='zh';renderServerIdentity()");assert.equal(badge.textContent,`当前连接服务器 ${id}`);}
+ for(const invalid of [{serverId:0},{serverId:3},{serverId:10},{serverId:'2'},{}]){const f=fixture(()=>page(1),invalid);await f.run('loadServerIdentity()');const badge=f.element('serverBadge');assert.equal(badge.textContent,'Server unavailable');assert.equal(badge.dataset.serverId,undefined);assert.equal(badge.classList.contains('is-connected'),false);}
 });
 
 test('ambiguous upload retries reuse one operation ID until the original request completes',async()=>{
@@ -358,4 +357,64 @@ test('account ABA during either chat source digest prevents target publication a
   f=fixture(()=>{throw Error('No write allowed');},undefined,{crypto});const guest=[{id:'original-chat',title:'Original',messages:[{role:'user',content:'source',images:['data:image/png;base64,AQID']}]}];prepareOrdinaryImport(f,guest);const before=JSON.stringify(guest);
   await assert.rejects(f.run('accountChatsOnLogin(guestOriginal)'),/import account changed/);assert.equal(f.requests.length,0);assert.equal(f.stored.size,0);assert.equal(JSON.stringify(guest),before);
  }
+});
+
+test('explicit pre-mutation MEMORY_BUSY retries a frozen body and original UUID only',async()=>{
+ let calls=0;const waits=[],f=fixture(()=>++calls<3?{__http:429,__retryAfter:'1',body:{code:'MEMORY_BUSY'}}:{revision:1},undefined,{setTimeout:(fn,ms)=>{waits.push(ms);queueMicrotask(fn);}});
+ await f.run("workspaceRequest({action:'saveChat',id:'busy-chat',title:'original',data:{messages:[{role:'user',content:'original'}]},revision:0})");
+ assert.equal(f.requests.length,3);assert.deepEqual(f.requests[0],f.requests[1]);assert.deepEqual(f.requests[1],f.requests[2]);assert.deepEqual(waits,[1000,1000]);assert.equal(f.stored.size,0);
+});
+test('busy retries are finite and retain the original operation for later explicit retry',async()=>{
+ let reject=true;const f=fixture(()=>reject?{__http:429,__retryAfter:'1',body:{code:'MEMORY_BUSY'}}:{revision:1},undefined,{setTimeout:fn=>queueMicrotask(fn)});
+ const call="workspaceRequest({action:'saveChat',id:'busy-chat',title:'original',data:{messages:[]},revision:0})";
+ await assert.rejects(f.run(call),e=>e.status===429&&e.code==='MEMORY_BUSY');assert.equal(f.requests.length,3);assert.equal(f.stored.size,1);
+ reject=false;await f.run(call);assert.equal(f.requests[0].operationId,f.requests[3].operationId);
+});
+test('throttles, unknown outcomes and malformed Retry-After never automatically retry',async()=>{
+ for(const failure of [{__http:429,__retryAfter:'1',body:{code:'THROTTLED'}},{__http:503,__retryAfter:'1',body:{code:'MEMORY_BUSY'}},{__http:503,__retryAfter:'1',body:{code:'OPERATION_PENDING'}},...[undefined,'0','4','Infinity','-1','Thu, 12 Nov 2026 12:00:00 GMT'].map(__retryAfter=>({__http:429,__retryAfter,body:{code:'MEMORY_BUSY'}}))]){
+  const f=fixture(()=>failure,undefined,{setTimeout:()=>{throw Error('Must not schedule retry');}});
+  await assert.rejects(f.run("workspaceRequest({action:'trashFile',id:'file'})"));assert.equal(f.requests.length,1);assert.equal(f.stored.size,1);
+ }
+});
+test('workspace waits for existing guest work and rejects logout or ABA during that wait',async()=>{
+ for(const change of ['none','logout','ABA']){
+  let release;const existing=new Promise(done=>release=done),f=fixture(()=>({revision:1}),undefined,{StarStore:{whenSettled:()=>existing}});
+  const pending=f.run("workspaceRequest({action:'saveChat',id:'waiting',title:'original',data:{messages:[]},revision:0})");
+  while(f.stored.size===0)await new Promise(resolve=>setImmediate(resolve));assert.equal(f.requests.length,0);
+  if(change==='logout')f.run("accountEmail='';accountIdentityRevision++");
+  if(change==='ABA')f.run("accountEmail='other@example.test';accountIdentityRevision++;accountEmail='owner@example.test';accountIdentityRevision++");
+  release();if(change==='none'){await pending;assert.equal(f.requests.length,1);}else{await assert.rejects(pending,e=>e.code==='ACTOR_CHANGED');assert.equal(f.requests.length,0);assert.equal(f.stored.size,1);}
+ }
+});
+test('account epoch change during the busy wait cannot dispatch a second attempt',async()=>{
+ let release;const f=fixture(()=>({__http:429,__retryAfter:'1',body:{code:'MEMORY_BUSY'}}),undefined,{setTimeout:fn=>{release=fn;}});
+ const pending=f.run("workspaceRequest({action:'deleteChat',id:'original',revision:1})");while(!release)await new Promise(resolve=>setImmediate(resolve));
+ f.run("accountEmail='other@example.test';accountIdentityRevision++;accountEmail='owner@example.test';accountIdentityRevision++");release();
+ await assert.rejects(pending,e=>e.code==='ACTOR_CHANGED');assert.equal(f.requests.length,1);assert.equal(f.stored.size,1);
+});
+test('a definite memory rejection does not permanently poison cloud saving or replace its ID',async()=>{
+ let reject=true;const f=fixture(()=>reject?{__http:429,__retryAfter:'1',body:{code:'MEMORY_BUSY'}}:{revision:1},undefined,{setTimeout:fn=>queueMicrotask(fn),showError(){}});
+ f.run("cloudReady=true;chats=[{id:'busy-history',title:'original',messages:[{role:'assistant',content:'',providerOperationId:'11111111-1111-4111-8111-111111111111'}]}]");
+ await assert.rejects(f.run("saveCloudChatsConfirmed('owner@example.test','busy-history')"));assert.equal(f.run('cloudFailed'),false);assert.equal(f.requests.length,3);
+ reject=false;await f.run("saveCloudChatsConfirmed('owner@example.test','busy-history')");assert.equal(f.requests[0].operationId,f.requests[3].operationId);assert.equal(f.run('chats[0].revision'),1);
+});
+test('read-only workspace waits hydration but not unrelated guest writes, mutations keep full barrier',async()=>{
+ let releaseHydration,releaseWrites;const hydrated=new Promise(done=>releaseHydration=done),settled=new Promise(done=>releaseWrites=done);
+ const f=fixture(()=>({revision:1}),undefined,{StarStore:{whenHydrated:()=>hydrated,whenSettled:()=>settled}});
+ const read=f.run("workspaceRequest({action:'listChats'})"),mutation=f.run("workspaceRequest({action:'saveChat',id:'blocked',data:{messages:[]},revision:0})");
+ await new Promise(done=>setImmediate(done));assert.equal(f.requests.length,0);releaseHydration();await read;assert.deepEqual(f.requests.map(r=>r.action),['listChats']);releaseWrites();await mutation;assert.equal(f.requests[1].action,'saveChat');
+});
+test('read hydration failure and same-account ABA never send workspace requests',async()=>{
+ const f=fixture(()=>({}),undefined,{StarStore:{whenHydrated:async()=>{throw Error('unconfirmed hydration');}}});await assert.rejects(f.run("workspaceRequest({action:'listFiles'})"),/hydration/);assert.equal(f.requests.length,0);
+ let release;const wait=new Promise(done=>release=done),g=fixture(()=>({}),undefined,{StarStore:{whenHydrated:()=>wait}});const reading=g.run("workspaceRequest({action:'readFile',id:'file'})");g.run('accountIdentityRevision++');release();await assert.rejects(reading,e=>e.code==='ACTOR_CHANGED');assert.equal(g.requests.length,0);
+});
+
+test('bounded chat opt-in falls back once to standard read with the identical page body',async()=>{
+ const calls=[];const f=fixture(()=>({}),undefined,{fetch:async(url,options)=>{if(url!=='api/workspace')return {ok:true,json:async()=>({serverId:1})};calls.push({headers:options.headers,body:options.body});return calls.length===1?{ok:false,status:413,headers:{get:()=>null},json:async()=>({code:'BOUNDED_CHAT_FALLBACK'})}:{ok:true,status:200,headers:{get:name=>name==='X-Four-Project-Durability'?'dual':null},json:async()=>({chats:[]})};}});
+ await f.run("workspaceRequest({action:'listChats',paginationProtocol:1,offset:4,snapshot:'original'})");
+ assert.equal(calls.length,2);assert.equal(calls[0].headers['X-Starhub-Bounded-Read'],'chat-v1');assert.equal(calls[1].headers['X-Starhub-Bounded-Read'],undefined);assert.equal(calls[0].body,calls[1].body);assert.equal(f.element('workspaceActivity').hidden,true);
+});
+test('network ambiguity shows pending and preserves the original mutation request identity',async()=>{
+ const f=fixture(()=>{throw Error('connection lost');});await assert.rejects(f.run("workspaceRequest({action:'deleteChat',id:'pending',revision:1})"),e=>e.code==='OPERATION_PENDING'&&!!e.operationId);
+ assert.equal(f.requests.length,1);assert.equal(f.stored.size,1);assert.equal(f.element('workspaceActivity').hidden,false);assert.match(f.element('workspaceActivity').textContent,/not confirmed/);
 });

@@ -58,14 +58,16 @@ class FileStorage implements XaTransactions.Journal,AutoCloseable {
         if(!"true".equals(config.getProperty("storage.enabled"))||!"true".equals(config.getProperty("storage.coordinator")))throw StorageFailure.unavailable();
         if(replicated&&!"atomic".equals(config.getProperty("storage.transactionMode")))
             throw new IllegalArgumentException("Replicated storage requires the atomic transaction migration; legacy XA is not a multi-writer mode");
-        if(replicated&&!cluster.physicalNodeIds().equals(Set.of(1,2)))
-            throw new IllegalArgumentException("Atomic storage requires the explicit two physical members");
+        if(replicated&&!cluster.physicalNodeIds().equals(SingleDatabase.enabled(config)?Set.of(2):Set.of(1,2)))
+            throw new IllegalArgumentException("Atomic storage physical membership differs from its explicit topology");
         for(int node:new int[]{1,2}){
             String prefix=node==1?"db.":"storage.node2.db.";
             MysqlXADataSource source=new MysqlXADataSource();source.setUrl(AccountServlet.jdbcUrl(config,prefix+"url"));
             source.setUser(cluster.required(prefix+"user"));source.setPassword(cluster.required(prefix+"password"));
             source.setConnectTimeout(3000);source.setSocketTimeout(AccountServlet.databaseSocketTimeout(config));source.setPinGlobalTxToPhysicalConnection(true);sources.put(node,source);
         }
+        if(SingleDatabase.enabled(config)&&"true".equals(config.getProperty("storage.single.pool.enabled","false")))
+            SingleDatabaseConnections.warmup(config,this::primary);
         Path store=Path.of(cluster.required("storage.objectStore"));
         // Provision this marker with the migration while all writers are stopped.
         // An unexpected empty/replaced store must never become presumed-abort proof.
@@ -109,7 +111,7 @@ class FileStorage implements XaTransactions.Journal,AutoCloseable {
     Connection node(int node)throws Exception{
         String prefix=node==1?"db.":"storage.node2.db.";
         Properties p=new Properties();p.setProperty("user",cluster.required(prefix+"user"));p.setProperty("password",cluster.required(prefix+"password"));
-        p.setProperty("connectTimeout","3000");p.setProperty("socketTimeout",Integer.toString(AccountServlet.databaseSocketTimeout(config)));return ReplicaAuthority.checked(DriverManager.getConnection(AccountServlet.jdbcUrl(config,prefix+"url"),p),config);
+        p.setProperty("connectTimeout",SingleDatabase.enabled(config)?"2000":"3000");p.setProperty("socketTimeout",Integer.toString(AccountServlet.databaseSocketTimeout(config)));return ReplicaAuthority.checked(SingleDatabaseConnections.open(config,prefix+"url",()->DriverManager.getConnection(AccountServlet.jdbcUrl(config,prefix+"url"),p)),config);
     }
     static boolean atomicRuntimeReady(AtomicFileStorage storage,StorageCluster cluster){
         try{String identity=Files.readString(Path.of(cluster.required("storage.objectStore")).resolve("identity")).trim();storage.database.runtimeProbe(identity);return true;}
@@ -381,6 +383,7 @@ class FileStorage implements XaTransactions.Journal,AutoCloseable {
                 if(!atomic.database.closeAndDrain())return;
                 atomicProcessLock.release();atomicLockChannel.close();
             }else transactions.close();
+            SingleDatabaseConnections.closePool();
         }finally{lifecycle.writeLock().unlock();}
     }
     private static final class Branch implements Xid{

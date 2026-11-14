@@ -147,7 +147,7 @@ final class AtomicFileStorage {
         Map<Integer,Long> result=new TreeMap<>();try(PreparedStatement q=c.prepareStatement("SELECT node_id,reserved_bytes FROM starhub_reserved_capacity WHERE op_id=? ORDER BY node_id FOR UPDATE")){q.setString(1,op);try(ResultSet r=q.executeQuery()){while(r.next())result.put(r.getInt(1),r.getLong(2));}}return result;
     }
     private Map<Integer,Long> totals(Connection c)throws SQLException {
-        Map<Integer,Long> result=new TreeMap<>();try(PreparedStatement q=c.prepareStatement("SELECT node_id,reserved_bytes FROM starhub_capacity_totals ORDER BY node_id FOR UPDATE");ResultSet r=q.executeQuery()){while(r.next())result.put(r.getInt(1),r.getLong(2));}if(!result.keySet().equals(Set.of(1,2)))throw new SQLException("Physical reservation totals missing");return result;
+        Map<Integer,Long> result=new TreeMap<>();try(PreparedStatement q=c.prepareStatement("SELECT node_id,reserved_bytes FROM starhub_capacity_totals ORDER BY node_id FOR UPDATE");ResultSet r=q.executeQuery()){while(r.next())result.put(r.getInt(1),r.getLong(2));}if(!result.keySet().equals(SingleDatabase.enabled(database.config)?Set.of(2):Set.of(1,2)))throw new SQLException("Physical reservation totals missing");return result;
     }
     private long stagedBytes(Connection c,String op)throws SQLException {
         try(PreparedStatement q=c.prepareStatement("SELECT COALESCE(SUM(c.byte_count),0) FROM starhub_payload_chunks c JOIN starhub_file_payloads f ON f.file_id=c.payload_id WHERE f.operation_id=? OR f.deleting_op=?")){q.setString(1,op);q.setString(2,op);try(ResultSet r=q.executeQuery()){if(!r.next())throw new SQLException("Staged payload accounting unavailable");return r.getLong(1);}}

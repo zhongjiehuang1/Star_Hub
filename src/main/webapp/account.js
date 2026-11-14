@@ -3,7 +3,7 @@ let accountEmail='',accountKeyRing=[],reauthEmail='',accountIdentityRevision=0,l
 function notifyAccountContext(){document.dispatchEvent(new CustomEvent('starhub:account-changed'));}
 const pendingAccountOperations=new Map();
 async function accountRequest(body,resolveKnown=true){
- if(['login','logout','changePassword'].includes(body.action)){accountIdentityRevision++;notifyAccountContext();if(typeof clearGeneratedPreviews==='function')clearGeneratedPreviews();}
+ if(['login','logout','changePassword'].includes(body.action)){accountWorkspaceBootstrap=null;accountIdentityRevision++;notifyAccountContext();if(typeof clearGeneratedPreviews==='function')clearGeneratedPreviews();}
  const mutation=['login','changePassword','addKey','selectKey','deleteKey'].includes(body.action);let pendingKey;
  function retire(){if(pendingKey){pendingAccountOperations.delete(pendingKey);try{sessionStorage.removeItem(pendingKey);}catch{}}}
  const mode=value=>['dual','single'].includes(value);
@@ -52,8 +52,17 @@ async function accountRequest(body,resolveKnown=true){
  }
 }
 
-async function restoreAccount(){
- try {const r=await fetch('api/account',{cache:'no-store'});if(!r.ok)return false;const data=await r.json();accountEmail=data.signedIn?data.email:'';accountKeyRing=data.keyRing||[];StarStore.setGuestMode(!data.signedIn);if(data.signedIn){keys.clear();for(const [p,k] of Object.entries(data.keys||{}))keys.set(p,k);StarStore.saveKeys(keys);}accountDisplay();return Boolean(data.signedIn);}catch{return false;}
+let accountRestoreFlight=null,accountWorkspaceBootstrap=null;
+function consumeWorkspaceBootstrap(){const value=accountWorkspaceBootstrap;accountWorkspaceBootstrap=null;return value&&value.email===accountEmail&&value.epoch===accountIdentityRevision?value.page:null;}
+function restoreAccount(bootstrap=false){
+ const epoch=accountIdentityRevision;
+ if(accountRestoreFlight?.epoch===epoch&&accountRestoreFlight.bootstrap===bootstrap)return accountRestoreFlight.promise;
+ accountWorkspaceBootstrap=null;
+ const flight={epoch,bootstrap};
+ flight.promise=(async()=>{
+ try {const r=await fetch(bootstrap?'api/account?bootstrap=1':'api/account',{cache:'no-store'});if(!r.ok)return false;const data=await r.json();if(epoch!==accountIdentityRevision||accountRestoreFlight!==flight)return false;accountWorkspaceBootstrap=null;const durability=r.headers?.get('X-Four-Project-Durability');if(bootstrap&&data.signedIn&&data.workspaceBootstrap){if(!['dual','single'].includes(durability))return false;accountWorkspaceBootstrap={email:data.email,epoch,page:{...data.workspaceBootstrap,confirmedDurability:durability}};}accountEmail=data.signedIn?data.email:'';accountKeyRing=data.keyRing||[];StarStore.setGuestMode(!data.signedIn);if(data.signedIn){keys.clear();for(const [p,k] of Object.entries(data.keys||{}))keys.set(p,k);StarStore.saveKeys(keys);}accountDisplay();return Boolean(data.signedIn);}catch{return false;}
+ })().finally(()=>{if(accountRestoreFlight===flight)accountRestoreFlight=null;});
+ accountRestoreFlight=flight;return flight.promise;
 }
 function accountDisplay(){if(lastDisplayedAccount!==accountEmail){lastDisplayedAccount=accountEmail;notifyAccountContext();if(typeof queueRender==='function')queueRender();}const signed=Boolean(accountEmail);$('accountButton').textContent=signed?accountEmail:t('登录');$('accountLogout').textContent=t('退出登录');$('accountLogout').hidden=!signed;$('accountSaveKey').hidden=!signed;$('openLibrary').hidden=!signed;$('guestKeyHelp').hidden=signed;$('keyScope').textContent=signed?t('可保存到账户'):t('临时会话');$('privacyHeading').textContent=signed?t('账户空间'):t('访客会话');$('privacyDetail').textContent=signed?t('聊天和已保存的密钥存放在账户中'):t('登录后可将聊天和文件保存到账户');$('setupKeyHelp').textContent=signed?t('在官方控制台创建 API 密钥并粘贴。要长期保存，请在账户密钥管理中保存。'):t('在官方控制台创建 API 密钥并粘贴。密钥在本标签页刷新后保留，关闭后无法再访问。');}
 function requestReauthentication(email){if(!email||email!==accountEmail)return;reauthEmail=email;showError(t('登录已过期。请重新登录原账户以保存当前页面的更改，暂时不要刷新。'));$('accountEmail').value=email;$('accountPassword').value='';$('accountError').textContent=t('登录已过期，请重新登录原账户。');if(!$('accountDialog').open)$('accountDialog').showModal();}
@@ -61,7 +70,7 @@ $('accountButton').onclick=()=>{if(reauthEmail){requestReauthentication(reauthEm
 $('accountClose').onclick=()=>$('accountDialog').close();
 $('accountForm').onsubmit=async e=>{e.preventDefault();$('accountSubmit').disabled=true;$('accountError').textContent='';
  if(reauthEmail){try{const email=reauthEmail;if($('accountEmail').value.trim().toLowerCase()!==email.toLowerCase())throw Error(t('请使用原账户重新登录，以保存当前页面的更改。'));await accountRequest({action:'login',email,password:$('accountPassword').value});$('accountPassword').value='';if(!await restoreAccount()||accountEmail!==email)throw Error(t('无法恢复账户，请重试。'));reauthEmail='';cloudFailed=false;await saveCloudChats();$('accountDialog').close();showError('');}catch(error){$('accountError').textContent=errorText(error.message);}finally{$('accountSubmit').disabled=typeof clusterAvailable!=='undefined'&&!clusterAvailable;}return;}
- const priorKeys=new Map(keys);try{const guest=accountEmail?[]:chats;await accountRequest({action:'login',email:$('accountEmail').value,password:$('accountPassword').value});$('accountPassword').value='';await restoreAccount();if(!accountEmail)throw Error('Could not load account.');cloudHydrating=true;updateConnection();$('accountDialog').close();await accountChatsOnLogin(guest);if(ready)selectProvider();}catch(error){if(accountEmail&&!cloudReady){try{await accountRequest({action:'logout'});}catch{}accountEmail='';keys.clear();for(const [p,k] of priorKeys)keys.set(p,k);StarStore.saveKeys(keys);accountDisplay();if(ready)selectProvider();}if($('accountDialog').open)$('accountError').textContent=error.message;else showError(error.message);}finally{cloudHydrating=Boolean(current?.hydrating);updateConnection();$('accountSubmit').disabled=typeof clusterAvailable!=='undefined'&&!clusterAvailable;}};
+ const priorKeys=new Map(keys);try{const guest=accountEmail?[]:chats;await accountRequest({action:'login',email:$('accountEmail').value,password:$('accountPassword').value});$('accountPassword').value='';await restoreAccount(true);if(!accountEmail)throw Error('Could not load account.');cloudHydrating=true;updateConnection();$('accountDialog').close();await accountChatsOnLogin(guest);if(ready)selectProvider();}catch(error){if(accountEmail&&!cloudReady){try{await accountRequest({action:'logout'});}catch{}accountEmail='';keys.clear();for(const [p,k] of priorKeys)keys.set(p,k);StarStore.saveKeys(keys);accountDisplay();if(ready)selectProvider();}if($('accountDialog').open)$('accountError').textContent=error.message;else showError(error.message);}finally{cloudHydrating=Boolean(current?.hydrating);updateConnection();$('accountSubmit').disabled=typeof clusterAvailable!=='undefined'&&!clusterAvailable;}};
 $('accountLogout').onclick=async()=>{try{await saveCloudChats();await accountRequest({action:'logout'});cloudReady=false;cloudFailed=false;const guest=StarStore.loadHistory();chats=guest?.chats||[];current=undefined;if(chats.length)activateChat(chats.find(c=>c.id===guest.currentId)||chats[0]);else newChat();keys.clear();StarStore.setGuestMode(true);StarStore.saveKeys(keys);accountEmail='';accountDisplay();if(ready)selectProvider();}catch(error){showError(error.message);}};
 $('accountSaveKey').onclick=()=>{openAccountSettings();$('accountKey').value=$('apiKey').value;};
 function openAccountSettings(){

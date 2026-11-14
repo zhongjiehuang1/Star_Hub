@@ -96,6 +96,10 @@ public final class ApiServlet extends HttpServlet {
             if(model.path("batch").asBoolean())throw new ModelGateway.Problem(400,"请通过批处理面板提交此模型。");
             if(Catalog.contains(model.path("categories"),"realtime"))throw new ModelGateway.Problem(400,"请通过实时语音面板连接此模型。");
             String task=request.path("task").asText("chat");if(!Catalog.contains(model.path("categories"),task))throw new ModelGateway.Problem(400,"模型不支持所选任务。");
+            if(task.equals("chat")&&request.path("provider").asText().equals("moonshot")&&KimiContext.supportsModel(request.path("model").asText())){
+                com.fasterxml.jackson.databind.node.ObjectNode verified=(com.fasterxml.jackson.databind.node.ObjectNode)request.deepCopy();
+                KimiContext.hydrate(verified,owner.identity(),KimiContext.configuredKey());request=verified;
+            }
             SearchGateway.Result retrieved=task.equals("chat")?search.enrich((com.fasterxml.jackson.databind.node.ObjectNode)request):null;
             if(task.equals("chat")&&request.path("stream").asBoolean()){
                 StringBuilder text=new StringBuilder(),summary=new StringBuilder();var completed=ModelGateway.JSON.createObjectNode();ModelGateway.Prepared prepared=ModelGateway.prepare(request,true);
@@ -105,9 +109,11 @@ public final class ApiServlet extends HttpServlet {
                     data.put("operationId",ticket.operation).put("operationState","SENT");event(res,event,data);
                 });
                 completed.put("text",text.toString());if(!summary.isEmpty())completed.put("reasoningSummary",summary.toString());enrich(completed,retrieved);
+                if(completed.has("providerReasoning"))KimiContext.protectConfiguredResult(completed,owner.identity());
                 ticket.complete(200,completed);ProviderOperations.Receipt durable=operations.status(owner,ticket.operation);providerHeaders(res,durable);var done=durable.result().deepCopy();done.remove(java.util.List.of("text","reasoningSummary"));done.put("durability",durable.durability());event(res,"done",done);return;
             }
             result=task.equals("chat")?gateway.chat(request):media.run(request);if(task.equals("image"))GeneratedImages.save(req,request,result);enrich(result,retrieved);
+            if(result.has("providerReasoning"))KimiContext.protectConfiguredResult(result,owner.identity());
         }
         ProviderOperations.Receipt completed=ticket.complete(status,result);ProviderOperations.Receipt authorized=operations.status(owner,ticket.operation);providerHeaders(res,authorized);
         send(res,status,authorized.result());

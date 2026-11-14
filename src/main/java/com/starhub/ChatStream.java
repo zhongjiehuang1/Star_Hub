@@ -6,7 +6,7 @@ import java.io.*;
 import java.nio.charset.StandardCharsets;
 import javax.net.ssl.HttpsURLConnection;
 
-/** Bounded upstream SSE parsing. Never forwards raw provider errors or reasoning text. */
+/** Bounded upstream SSE parsing. Kimi continuation is returned only in the final structured result. */
 final class ChatStream {
     interface Sink { void emit(String event,ObjectNode data)throws IOException; }
     interface ResponseHandler { void accept(int status,String type,InputStream input)throws IOException; }
@@ -42,6 +42,10 @@ final class ChatStream {
             if(!state.done&&!state.finished)throw bad("流式连接提前中断，已收到的文字已保留。");
             if(state.characters==0)throw bad("服务商未返回文本，可能触发内容过滤或模型不支持文本对话。");
             ObjectNode result=ModelGateway.JSON.createObjectNode().put("provider",p.provider.id).put("model",p.model);
+            if(p.provider.id.equals("moonshot")&&KimiContext.supportsModel(p.model)) {
+                if(state.contextUnavailable || state.providerReasoning.isEmpty() || state.providerReasoning.toString().isBlank())result.put("continuationUnavailable",true);
+                else result.putObject("providerReasoning").put("provider","moonshot").put("model",p.model).put("content",state.providerReasoning.toString());
+            }
             if(!state.usage.isEmpty())result.set("usage",state.usage);
             if(!state.details.isEmpty())result.set("details",state.details);
             if(!state.warning.isEmpty())result.put("warning",state.warning);
@@ -51,7 +55,8 @@ final class ChatStream {
     static final class State {
         final ModelGateway.Prepared p;final Sink sink;final long started=System.nanoTime();long lastSent=started;
         final ObjectNode usage=ModelGateway.JSON.createObjectNode(),details=ModelGateway.JSON.createObjectNode();
-        int characters,summaryCharacters;boolean done,finished;String warning="";
+        int characters,summaryCharacters;boolean done,finished,contextUnavailable;String warning="";
+        final StringBuilder providerReasoning=new StringBuilder();
         State(ModelGateway.Prepared p,Sink sink){this.p=p;this.sink=sink;}
         void text(String value)throws IOException{
             if(value.isEmpty())return;characters+=value.length();if(characters>1000000)throw bad("回复过长，已结束连接。");
@@ -103,6 +108,11 @@ final class ChatStream {
                 if(e.path("usageMetadata").isObject())usage.setAll((ObjectNode)e.path("usageMetadata"));
             }else{
                 JsonNode choice=e.path("choices").path(0),content=choice.path("delta").path("content");
+                JsonNode reason=choice.path("delta").path("reasoning_content");
+                if(p.provider.id.equals("moonshot")&&KimiContext.supportsModel(p.model)&&!reason.isMissingNode()&&!reason.isNull()) {
+                    if(!reason.isTextual() || providerReasoning.length()+reason.asText().length()>100000){contextUnavailable=true;providerReasoning.setLength(0);}
+                    else if(!contextUnavailable)providerReasoning.append(reason.asText());
+                }
                 if(content.isTextual())text(content.asText());else if(content.isArray())for(JsonNode part:content)text(part.path("text").asText());
                 text(choice.path("delta").path("refusal").asText());finish(choice.path("finish_reason").asText(""));
                 if(choice.path("logprobs").path("content").isArray()&&(p.parameters.has("logprobs")||p.parameters.has("top_logprobs")))details.withArray("logprobs").addAll((ArrayNode)choice.path("logprobs").path("content"));

@@ -31,7 +31,8 @@ function appendModelApiLinks(root,m){
   for(const [name,url]of [[t("平台模型目录 / 接口说明"),m.source],[t("模型厂商官方文档"),m.officialSource]])if(url)root.append(apiAddress(name,url));
 }
 function refreshCurrentApi(){
-  const m=selectedModel(),p=providers.find(p=>p.id===$('provider').value);let route=m?.apiRoutes?.[$('task').value]?.[0];if($('task').value==='chat'&&$('webSearch').checked&&!$('webSearch').disabled&&((m?.provider==='deepseek'&&m.id==='deepseek-v4-pro')||(m?.provider==='xai'&&m.id==='grok-4.7')))route={method:'POST',url:p.baseUrl+'/responses'};
+  if(!$('currentApi'))return;
+  const m=selectedModel(),p=providers.find(p=>p.id===$('provider').value);let route=m?.apiRoutes?.[$('task').value]?.[0];if($('task').value==='chat'&&$('webSearch').checked&&!$('webSearch').disabled&&(m?.provider==='xai'&&m.id==='grok-4.7'))route={method:'POST',url:p.baseUrl+'/responses'};
   $('browseApis').disabled=!catalog;$('currentApiUrl').textContent=route?`${route.method} · ${route.url}`:t("请选择模型以查看实际调用地址");
   $('currentApiUrl').removeAttribute('href');if(route?.url.startsWith('https://'))$('currentApiUrl').href=route.url;
   $('currentKeyUrl').textContent=p?.keyUrl?t("密钥入口 · {0}",p.keyUrl):'';
@@ -52,7 +53,7 @@ function showApiDirectory(){
   $('apiDialog').showModal();
 }
 document.addEventListener('starhub:modelchanged',refreshCurrentApi);
-$('browseApis').addEventListener('click',showApiDirectory);
+$('browseApis')?.addEventListener('click',showApiDirectory);
 $('closeApis').addEventListener('click',()=>$('apiDialog').close());
 if(catalog)refreshCurrentApi();
 
