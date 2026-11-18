@@ -8,6 +8,13 @@ function fixture(handler){
  return {stored,requests,run:code=>vm.runInContext(code,context)};
 }
 const ok=body=>({ok:true,status:200,headers:{get:()=> 'dual'},json:async()=>({ok:true,operationId:body.operationId,operationState:'COMMITTED'})});
+test('a low-storage logout refusal clearly says the account remains signed in',()=>{
+ const f=fixture(body=>ok(body));assert.match(f.run("accountLogoutError({code:'INSUFFICIENT_STORAGE'})"),/未能退出登录.*仍保持登录/);
+});
+test('a committed login replay whose session ended is not reported as a successful sign in',async()=>{
+ const f=fixture(body=>({ok:true,status:200,headers:{get:()=> 'dual'},json:async()=>({ok:false,code:'SESSION_ENDED',operationId:body.operationId,operationState:'COMMITTED'})}));
+ await assert.rejects(f.run("accountRequest({action:'login',email:'user@example.test',password:'test-only-secret'})"),e=>e.code==='SESSION_ENDED');assert.equal(f.stored.size,0);
+});
 test('password operation identity survives lost replies and reauthentication without storing credentials',async()=>{
  const f=fixture((body,n)=>{if(n===1)throw Error('lost response');if(n===2)return {ok:false,status:401,json:async()=>({code:'AUTHENTICATION_REQUIRED'})};return ok(body);});
  const call="accountRequest({action:'changePassword',currentPassword:'old-synthetic-password',newPassword:'new-synthetic-password'})";

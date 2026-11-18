@@ -142,6 +142,7 @@ final class AtomicDatabase {
                     "SELECT guest_id,tab_id,last_flush FROM starhub_guest_tabs LIMIT 0",
                     "SELECT id,content,sha256,size_bytes FROM "+table(1,"file_blobs")+" LIMIT 0","SELECT id,content,sha256,size_bytes FROM "+table(2,"file_blobs")+" LIMIT 0"))
                 try(Statement q=c.createStatement()){q.executeQuery(query).close();}
+            AccountFeatureSchema.verify(c,config);
             authority.unchanged(lease);
         }
     }
@@ -169,6 +170,7 @@ final class AtomicDatabase {
                     "SELECT guest_id,operation_id,request_hash,result_cipher FROM starhub_guest_operations WHERE 1=0",
                     "SELECT used_units,operation_count FROM starhub_guest_budget WHERE id=1"))
                 try(Statement q=c.createStatement()){q.executeQuery(sql).close();}
+            AccountFeatureSchema.verify(c,config);
             for(String sql:List.of("SELECT COUNT(*) FROM file_storage_operations WHERE state NOT IN ('COMMITTED','ABORTED','RESERVED','CANCELLING','CANCELLED','DELETING')",
                     "SELECT COUNT(*) FROM file_storage_users u WHERE active_op IS NOT NULL OR reserved_bytes<>COALESCE((SELECT SUM(o.logical_bytes) FROM file_storage_operations o WHERE o.user_id=u.user_id AND o.user_generation=u.generation AND o.state IN ('RESERVED','CANCELLING')),0)+COALESCE((SELECT SUM(p.logical_reserved) FROM starhub_provider_operations p WHERE p.account_user_id=u.user_id AND p.account_generation=u.generation),0)",
                     "SELECT COUNT(*) FROM file_storage_operations o LEFT JOIN starhub_upload_reservations r ON r.op_id=o.op_id WHERE o.state IN ('RESERVED','CANCELLING') AND (o.kind<>'UPLOAD' OR r.op_id IS NULL)",

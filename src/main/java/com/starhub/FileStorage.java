@@ -172,7 +172,7 @@ class FileStorage implements XaTransactions.Journal,AutoCloseable {
     ObjectNode summary(long user,String id)throws Exception{return request(()->{if(atomic==null)throw StorageFailure.unavailable();return atomic.summary(user,id);});}
 
     private ObjectNode listNow(long user,JsonNode input)throws Exception{
-        ensureReady();try(Connection c=primary()){c.setAutoCommit(false);try{lockUser(c,user);ObjectNode result=FileLibrary.listPage(c,user,input);c.commit();return result;}catch(Exception failure){c.rollback();throw failure;}}
+        ensureReady();try(Connection c=primary()){c.setAutoCommit(false);try{String generation=lockUser(c,user);ObjectNode result=FileLibrary.listPage(c,user,generation,input);c.commit();return result;}catch(Exception failure){c.rollback();throw failure;}}
     }
     private ObjectNode readNow(long user,String id)throws Exception{
         ensureReady();try(Connection c=primary()){c.setAutoCommit(false);try{
@@ -217,6 +217,7 @@ class FileStorage implements XaTransactions.Journal,AutoCloseable {
         JsonNode file=ModelGateway.JSON.readTree(admitted.files).get(0);
         execute(admitted,connections->{
             if(!file.path("legacy").asBoolean())try(PreparedStatement q=connections.get(admitted.node).prepareStatement("DELETE FROM file_blobs WHERE id=? AND user_id=? AND owner_generation=?")){q.setString(1,id);q.setLong(2,user);q.setString(3,admitted.generation);if(q.executeUpdate()!=1)throw new SQLException("File body missing.");}
+            LibraryFolders.removePlacement(connections.get(1),user,admitted.generation,id);
             try(PreparedStatement q=connections.get(1).prepareStatement("DELETE FROM library_files WHERE id=? AND user_id=? AND owner_generation=? AND deleted_at IS NOT NULL")){q.setString(1,id);q.setLong(2,user);q.setString(3,admitted.generation);if(q.executeUpdate()!=1)throw new SQLException("File state changed.");}
             try(PreparedStatement q=connections.get(1).prepareStatement("UPDATE file_storage_users SET used_bytes=used_bytes-? WHERE user_id=? AND generation=? AND active_op=? AND used_bytes>=?")){q.setLong(1,admitted.logical);q.setLong(2,user);q.setString(3,admitted.generation);q.setString(4,admitted.id);q.setLong(5,admitted.logical);if(q.executeUpdate()!=1)throw new SQLException("Quota state changed.");}
         });return load(operation).result();

@@ -46,6 +46,47 @@ class OfficialApiTest {
         JsonNode generated=g.run(r).path("media").path(0);assertArrayEquals(new byte[]{1,2,3},generated.path("imageBytes").binaryValue());assertEquals("image/png",generated.path("mime").asText());assertFalse(generated.has("url"));
         r.put("file","data:image/png;base64,AQID");assertThrows(ModelGateway.Problem.class,()->g.run(r));
     }
+    @Test void explicitImageEditUsesOfficialEndpointAndBoundedSource()throws Exception{
+        ObjectNode r=request("gpt-image-2.6-flare","image").put("imageEdit",true).put("file","data:image/png;base64,AQID");
+        r.putObject("parameters").put("size","1024x1024").put("quality","high");
+        int[] calls={0};MediaGateway g=new MediaGateway((method,url,key,type,bytes)->{
+            calls[0]++;assertEquals("POST",method);assertEquals("https://api.openai.com/v1/images/edits",url);assertEquals("application/json",type);
+            JsonNode body=ModelGateway.JSON.readTree(bytes);assertEquals("gpt-image-2.6-flare",body.path("model").asText());assertEquals("data:image/png;base64,AQID",body.path("images").path(0).path("image_url").asText());
+            assertEquals(1,body.path("images").size());assertEquals("1024x1024",body.path("size").asText());assertFalse(body.has("apiKey"));assertFalse(body.has("imageEdit"));
+            return response("{\"data\":[{\"b64_json\":\"AQID\"}]}");
+        });
+        assertArrayEquals(new byte[]{1,2,3},g.run(r).path("media").path(0).path("imageBytes").binaryValue());assertEquals(1,calls[0]);
+        for(String invalid:List.of("", "https://example.com/image.png", "data:image/svg+xml;base64,AQID", "data:image/png;base64,???", "data:image/png;base64,"+"A".repeat(6*1024*1024))){
+            r.put("file",invalid);assertThrows(ModelGateway.Problem.class,()->g.run(r));
+        }
+        r.put("file","data:image/png;base64,AQID").put("imageEdit","true");assertThrows(ModelGateway.Problem.class,()->g.run(r));
+        r.put("imageEdit",true).putArray("files").add("data:image/png;base64,AQID");assertThrows(ModelGateway.Problem.class,()->g.run(r));assertEquals(1,calls[0]);
+    }
+    @Test void imageResponseSettingsSkipLargeSourceWithoutChangingOutputLimits()throws Exception{
+        ObjectNode body=ModelGateway.JSON.createObjectNode().put("model","gpt-image-2.6-flare");
+        body.putArray("images").addObject().put("image_url","data:image/png;base64,"+"A".repeat(4*1024*1024));
+        body.put("output_format","webp").put("n",2);
+        ObjectNode options=MediaGateway.imageResponseOptions(ModelGateway.JSON.writeValueAsBytes(body));
+        assertEquals(2,options.path("n").asInt());assertEquals("webp",options.path("output_format").asText());assertEquals(2,options.size());
+        ObjectNode defaults=MediaGateway.imageResponseOptions("{}".getBytes(StandardCharsets.UTF_8));assertEquals(1,defaults.path("n").asInt());assertEquals("png",defaults.path("output_format").asText());
+        assertThrows(java.io.IOException.class,()->MediaGateway.imageResponseOptions("[]".getBytes(StandardCharsets.UTF_8)));
+    }
+    @Test void imageEditAcceptsExactlyFourMibAndRejectsOneByteMore()throws Exception{
+        ObjectNode r=request("gpt-image-2.6-flare","image").put("imageEdit",true);int[] calls={0};
+        MediaGateway gateway=new MediaGateway((method,url,key,type,body)->{calls[0]++;assertTrue(body.length<6*1024*1024);return response("{\"data\":[{\"b64_json\":\"AQID\"}]}");});
+        r.put("file","data:image/png;base64,"+Base64.getEncoder().encodeToString(new byte[4*1024*1024]));gateway.run(r);assertEquals(1,calls[0]);
+        r.put("file","data:image/png;base64,"+Base64.getEncoder().encodeToString(new byte[4*1024*1024+1]));assertThrows(ModelGateway.Problem.class,()->gateway.run(r));assertEquals(1,calls[0]);
+    }
+    @Test void imageEditsAreLimitedToOneWhileTextGenerationStillSupportsFour()throws Exception{
+        ObjectNode edit=request("gpt-image-2.6-flare","image").put("imageEdit",true).put("file","data:image/png;base64,AQID");int[] calls={0};
+        MediaGateway gateway=new MediaGateway((method,url,key,type,body)->{calls[0]++;assertEquals("https://api.openai.com/v1/images/generations",url);assertEquals(4,ModelGateway.JSON.readTree(body).path("n").asInt());return response("{\"data\":[{\"b64_json\":\"AQID\"},{\"b64_json\":\"AQID\"},{\"b64_json\":\"AQID\"},{\"b64_json\":\"AQID\"}]}");});
+        for(int n:List.of(2,4)){
+            edit.putObject("parameters").put("n",n);
+            ModelGateway.Problem problem=assertThrows(ModelGateway.Problem.class,()->gateway.run(edit));assertEquals(400,problem.status);assertTrue(problem.getMessage().contains("只能生成一张"));
+        }
+        assertEquals(0,calls[0]);ObjectNode generated=request("gpt-image-2.6-flare","image");generated.putObject("parameters").put("n",4);
+        assertEquals(4,gateway.run(generated).path("media").size());assertEquals(1,calls[0]);
+    }
     @Test void nativeSpeechPreservesVoiceSettingsAndReturnsPlayableAudio()throws Exception{
         ObjectNode r=request("voice-tts","speech").put("provider","xai").put("voice","eve");r.putObject("parameters").put("speed",1.1);
         JsonNode out=new MediaGateway((method,url,key,type,bytes)->{assertEquals("https://api.x.ai/v1/tts",url);JsonNode b=ModelGateway.JSON.readTree(bytes);assertEquals("eve",b.path("voice_id").asText());assertEquals("auto",b.path("language").asText());assertFalse(b.has("model"));return new MediaGateway.Response(200,"audio/mpeg",new byte[]{1,2,3});}).run(r);

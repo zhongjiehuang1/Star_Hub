@@ -22,17 +22,21 @@ final class AtomicHttp {
     // one request-results row. This is an operation cost, never a safety floor.
     static final int MAX_MUTATION_RECEIPT_ROW_BYTES=MAX_MUTATION_RECEIPT_BYTES+(36+36+120+120)*4+32+8+2;
     @FunctionalInterface interface PhysicalAdmission {void check(Connection c,long bytes)throws Exception;}
-    private static final Set<String> WORKSPACE_MUTATIONS=Set.of("upload","deleteFile","trashFile","restoreFile","saveChat","deleteChat");
+    private static final Set<String> WORKSPACE_MUTATIONS=Set.of("upload","deleteFile","trashFile","restoreFile","saveChat","deleteChat","createFolder","renameFolder","deleteFolder","moveFile","setMemoryEnabled","deleteMemory","editMemory","saveLocalMemory","saveSemanticMemory");
     private static final Set<String> ACCOUNT_MUTATIONS=Set.of("changePassword","addKey","selectKey","deleteKey");
     private AtomicHttp() { }
     static void run(HttpServletRequest original,HttpServletResponse target,FilterChain chain,FileStorage service)throws IOException,ServletException {
         run(original,target,chain,service.atomic.database,service.config,service::ensureReady,service.atomic::transientCapacity);
     }
     static void run(HttpServletRequest original,HttpServletResponse target,FilterChain chain,AtomicDatabase database,Properties config,Runnable ensureReady,PhysicalAdmission physical)throws IOException,ServletException {
-        if(BoundedChatRead.selected(original)){BoundedChatRead.run(original,target,()->{ensureReady.run();return config;});return;}
         byte[] body=null;JsonNode input=ModelGateway.JSON.createObjectNode();String path=original.getServletPath(),op=null;HeavyRequestBody memory=null;
         boolean post="POST".equals(original.getMethod()),mutation=false,login=false,loginQuery=false,fileProtocol=false;
         try {
+            if(BoundedChatRead.selected(original)){
+                ensureReady.run();
+                if(!idleAdmission(database,config,physical,original.getSession(false))){failure(target,401,"SESSION_ENDED","登录会话已结束，请重新登录原账户。",null);return;}
+                BoundedChatRead.run(original,target,()->{ensureReady.run();return config;});return;
+            }
             if(post){
                 if(!"web".equals(original.getHeader("X-Starhub-Client"))||!DeploymentConfig.allowsOrigin(original.getHeader("Origin"))
                         ||original.getContentType()==null||!original.getContentType().toLowerCase(Locale.ROOT).startsWith("application/json"))throw new StorageFailure(403,"INVALID_ORIGIN","请求来源无效。");
@@ -48,6 +52,9 @@ final class AtomicHttp {
             if(op==null)op=UUID.randomUUID().toString();
             // Accepted requests retain the original fresh pre-SQL check; pre-admission refusals do not probe.
             ensureReady.run();
+            String idleAction=input.path("action").asText();
+            boolean idleControl="/api/account".equals(path)&&((!post&&original.getParameter("sessionStatus")!=null)||(post&&Set.of("login","loginStatus","logout","userActivity").contains(idleAction)));
+            if(!idleControl&&!idleAdmission(database,config,physical,original.getSession(false))){failure(target,401,"SESSION_ENDED","登录会话已结束，请重新登录原账户。",mutation||fileProtocol?op:null);return;}
             if(post&&"/api/workspace".equals(path)&&Set.of("upload","cancelUpload","deleteFile").contains(input.path("action").asText())){
                 // Content/cleanup consists of individually confirmed bounded TXs.
                 // Never wrap the whole logical operation in another SQL scope.
@@ -81,6 +88,7 @@ final class AtomicHttp {
                         }
                     }
                     if(mutation)physical.check(scope.connection,WorkspaceMutationBudget.estimate(scope.connection,user,path,input));
+                    if(idleControl&&AccountServlet.idleEnabled(config))physical.check(scope.connection,AccountIdleSessions.LOGIN_PHYSICAL_BOUND);
                     chain.doFilter(request,buffered);buffered.finishWriter();
                     if((mutation||fileProtocol)&&spaceRefusal(buffered)){scope.close();storageRefusal(target,op);return;}
                     if(mutation&&legacyRefusal(buffered)){scope.close();failure(target,503,"LEGACY_CAPACITY_MIGRATION_REQUIRED","历史文件尚未通过当前分段容量模型验证；原文件和配额保留，需要先受控迁移。",op);return;}
@@ -105,6 +113,10 @@ final class AtomicHttp {
         }catch(StorageFailure failure){if(failure.status==429)target.setHeader("Retry-After","1");failure(target,failure.status,failure.code,failure.getMessage(),mutation||login||fileProtocol?op:null);}
         catch(Exception unavailable){OperationalDiagnostics.record(OperationalDiagnostics.Reason.ATOMIC_UNEXPECTED);failure(target,503,mutation||login||fileProtocol?"OPERATION_PENDING":"CLUSTER_UNAVAILABLE","服务器故障，请等待恢复",mutation||login||fileProtocol?op:null);}
         finally{if(memory!=null)memory.close();}
+    }
+    private static boolean idleAdmission(AtomicDatabase database,Properties config,PhysicalAdmission physical,HttpSession session)throws Exception {
+        if(!AccountServlet.idleEnabled(config)||session==null||!(session.getAttribute("starhub.account.id") instanceof Long))return true;
+        return database.run(UUID.randomUUID().toString(),c->{physical.check(c,AccountIdleSessions.LOGIN_PHYSICAL_BOUND);return AccountServlet.idleEntry(c,session);});
     }
     static ObjectNode result(Connection c,long user,String generation,String operation)throws Exception {
         FileStorage.operationId(operation);

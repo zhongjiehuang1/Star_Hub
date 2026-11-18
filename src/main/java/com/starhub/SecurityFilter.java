@@ -19,7 +19,7 @@ public final class SecurityFilter implements Filter {
         res.setHeader("X-Frame-Options", "DENY");
         res.setHeader("Referrer-Policy", "no-referrer");
         res.setHeader("Permissions-Policy", "camera=(), microphone=(self), geolocation=()");
-        res.setHeader("Content-Security-Policy", "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https: blob:; media-src 'self' data: https: blob:; connect-src 'self' " + DeploymentConfig.websocketSources() + "; object-src 'none'; base-uri 'self'; frame-ancestors 'none'; form-action 'self'");
+        res.setHeader("Content-Security-Policy", "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https: blob:; media-src 'self' data: https: blob:; connect-src 'self' " + DeploymentConfig.websocketSources() + "; frame-src 'self' https://www.openstreetmap.org; object-src 'none'; base-uri 'self'; frame-ancestors 'none'; form-action 'self'");
         res.setHeader("Cache-Control", "no-store");
         String endpoint=req.getServletPath()+java.util.Objects.toString(req.getPathInfo(),"");
         // Operational endpoints contain no regional/user data. The private recovery
@@ -50,7 +50,7 @@ public final class SecurityFilter implements Filter {
                 // The target comes only from the current request, not a user-supplied return URL.
                 String target = (String) session.getAttribute(RegionAccess.RETURN_TO);
                 session.removeAttribute(RegionAccess.RETURN_TO);
-                if (target == null || !target.startsWith(req.getContextPath() + "/") || target.startsWith("//") || target.indexOf('\r') >= 0 || target.indexOf('\n') >= 0 || target.indexOf('\\') >= 0) target = req.getContextPath() + "/";
+                if (target == null || !target.startsWith(req.getContextPath() + "/") || target.startsWith("//") || target.indexOf('\r') >= 0 || target.indexOf('\n') >= 0 || target.indexOf('\\') >= 0 || target.startsWith(req.getContextPath() + "/api/gmail")) target = req.getContextPath() + "/";
                 res.setStatus(HttpServletResponse.SC_SEE_OTHER);
                 res.setHeader("Location", target);
                 return;
@@ -58,8 +58,9 @@ public final class SecurityFilter implements Filter {
             invalid = true;
         }
         if (!submitted && "GET".equals(req.getMethod()) && !"/_access".equals(req.getServletPath())) {
-            String target = req.getRequestURI();
-            String query = req.getQueryString();
+            boolean gmailPath=req.getRequestURI().startsWith(req.getContextPath()+"/api/gmail");
+            String target = gmailPath ? req.getContextPath()+"/" : req.getRequestURI();
+            String query = gmailPath ? null : req.getQueryString();
             if (query != null && query.indexOf('\r') < 0 && query.indexOf('\n') < 0) target += "?" + query;
             session.setAttribute(RegionAccess.RETURN_TO, target);
         }

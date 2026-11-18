@@ -11,7 +11,13 @@ final class WorkspaceMutationBudget {
     static long estimate(Connection c,long user,String endpoint,JsonNode input)throws Exception {
         long bytes=AtomicHttp.MAX_MUTATION_RECEIPT_ROW_BYTES;
         if(!endpoint.equals("/api/workspace"))return bytes;
-        String action=input.path("action").asText();if(!action.equals("saveChat")&&!action.equals("deleteChat"))return bytes;
+        String action=input.path("action").asText();
+        // Bounded memory records contain at most 2 KiB of ciphertext; a write
+        // modifies at most one settings row and one record (old and new images).
+        if(java.util.Set.of("setMemoryEnabled","deleteMemory","editMemory","saveLocalMemory","saveSemanticMemory").contains(action))return Math.addExact(bytes,16384);
+        // Bound full old/new row images and indexes for the small folder mutations.
+        if(java.util.Set.of("createFolder","renameFolder","deleteFolder","moveFile").contains(action))return Math.addExact(bytes,8192);
+        if(!action.equals("saveChat")&&!action.equals("deleteChat"))return bytes;
         try(PreparedStatement q=c.prepareStatement("SELECT OCTET_LENGTH(payload),OCTET_LENGTH(title) FROM conversations WHERE user_id=? AND chat_id=?")){
             q.setLong(1,user);q.setString(2,input.path("id").asText());try(ResultSet r=q.executeQuery()){
                 if(r.next()){long payload=r.getLong(1),title=r.getLong(2);if(payload<0||payload>MAX_CHAT_UTF8_BYTES||title<0||title>MAX_TITLE_UTF8_BYTES)throw new StorageFailure(503,"LEGACY_CAPACITY_MIGRATION_REQUIRED","历史聊天超过当前容量模型边界；原记录保留，需要先受控迁移。");bytes=Math.addExact(bytes,Math.addExact(payload,title));}

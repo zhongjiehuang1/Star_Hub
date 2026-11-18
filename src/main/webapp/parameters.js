@@ -1,6 +1,17 @@
 'use strict';
-let parameterDefinitions=[];
+let parameterDefinitions=[],parameterIdentity;
 const parameterNames={two_stems_v1:t("人声 / 伴奏双音轨"),six_stems_v1:t("六音轨"),json_object:t("JSON 对象"),json_schema:'JSON Schema',low:t("低"),medium:t("中"),high:t("高"),auto:t("自动"),transparent:t("透明"),opaque:t("不透明"),enabled:t("开启"),disabled:t("关闭"),adaptive:t("自动思考"),between_tools:t("不预先思考"),near_field:t("近场麦克风"),far_field:t("远场麦克风"),mp3:'MP3',pcm:t("PCM 原始音频"),wav:'WAV',verbose_json:t("详细 JSON（含时间信息）"),diarized_json:t("JSON（区分说话人）"),text:t("纯文本"),srt:t("SRT 字幕"),vtt:t("VTT 字幕")};
+const parameterStorageKey='starhub.v1.parameterSettings';
+function rawParameterValues(){
+  const values={};for(const spec of parameterDefinitions){const input=$('param-'+spec.key);if(input&&spec.type!=='image'&&input.value&&input.value.length<=100000)values[spec.key]=input.value;}return values;
+}
+function saveParameterState(report=false){
+  try{if(parameterIdentity)window.sessionStorage.setItem(parameterStorageKey,JSON.stringify({identity:parameterIdentity,values:rawParameterValues()}));else window.sessionStorage.removeItem(parameterStorageKey);}
+  catch{if(report)showError(t('无法保存设置，请检查浏览器存储空间。'));}
+}
+function savedParameterValues(identity){
+  try{const saved=JSON.parse(window.sessionStorage.getItem(parameterStorageKey)||'null');return saved?.identity===identity&&saved.values&&typeof saved.values==='object'&&!Array.isArray(saved.values)?saved.values:{};}catch{return {};}
+}
 function parameterSnapshot(){
   const values={};for(const spec of parameterDefinitions){const input=$('param-'+spec.key);if(!input||input.value==='')continue;
     if(spec.type==='boolean')values[spec.key]=input.value==='true';
@@ -16,7 +27,9 @@ function refreshParameterConditions(){
   $('parameterStatus').textContent=count?t("已设置 {0} 项",count):t("平台默认");
 }
 function configureParameters(){
-  const model=selectedModel();parameterDefinitions=model?.execution==='external'?[]:model?.settings?.[$('task').value]||[];
+  const model=selectedModel(),identity=model?JSON.stringify([accountEmail||'',model.provider,model.id,$('task').value]):'';
+  const restored=parameterIdentity===undefined?savedParameterValues(identity):parameterIdentity===identity?rawParameterValues():{};
+  parameterIdentity=identity;parameterDefinitions=model?.execution==='external'?[]:model?.settings?.[$('task').value]||[];
   $('modelSettings').hidden=!parameterDefinitions.length;$('parameterFields').replaceChildren();$('parameterError').textContent='';
   $('parameterModel').textContent=model?`${model.providerName} · ${model.name} · ${catalog.categories[$('task').value]}`:'';
   $('parameterSources').replaceChildren();
@@ -29,11 +42,13 @@ function configureParameters(){
     }else if(['json','lines'].includes(spec.type)||spec.maxLength>2000){input=element('textarea');input.rows=spec.type==='json'?5:3;input.placeholder=spec.example||(spec.type==='lines'?t("每行一条"):t("留空使用平台默认"));}
     else{input=element('input');input.type=['integer','number'].includes(spec.type)?'number':spec.type==='image'?'file':spec.type==='url'?'url':'text';if(spec.type==='image')input.accept='image/png,image/jpeg,image/webp';input.placeholder=t("平台默认");}
     if(spec.min!==undefined)input.min=spec.min;if(spec.max!==undefined)input.max=spec.max;if(spec.type==='integer')input.step='1';if(spec.type==='number')input.step='any';if(spec.maxLength)input.maxLength=spec.maxLength;
-    input.id='param-'+spec.key;input.dataset.parameter=spec.key;input.addEventListener('input',refreshParameterConditions);input.addEventListener('change',refreshParameterConditions);
+    input.id='param-'+spec.key;input.dataset.parameter=spec.key;
+    if(spec.type!=='image'&&typeof restored[spec.key]==='string'&&restored[spec.key].length<=100000)input.value=restored[spec.key];
+    const changed=()=>{refreshParameterConditions();saveParameterState(true);};input.addEventListener('input',changed);input.addEventListener('change',changed);
     const range=spec.min!==undefined?t("范围 {0}–{1}。 ",spec.min.toLocaleString(),spec.max.toLocaleString()):'';
     label.append(input,element('small',range+(spec.help||t("留空使用平台默认。"))));if(['json','lines','text','url','image'].includes(spec.type))label.classList.add('parameter-wide');$('parameterFields').append(label);
   }
-  refreshParameterConditions();if($('parameterDialog').open)$('parameterDialog').close();
+  refreshParameterConditions();saveParameterState();if($('parameterDialog').open)$('parameterDialog').close();
 }
 async function collectParameters(){
   const raw=parameterSnapshot(),values={};
@@ -59,7 +74,7 @@ async function collectParameters(){
 $('modelSettings').onclick=()=>{refreshParameterConditions();$('parameterDialog').showModal();};
 $('closeParameters').onclick=()=>$('parameterDialog').close();
 $('applyParameters').onclick=async()=>{try{await collectParameters();$('parameterDialog').close();}catch{}};
-$('resetParameters').onclick=()=>{for(const spec of parameterDefinitions)$('param-'+spec.key).value='';$('parameterError').textContent='';refreshParameterConditions();};
-$('effort').addEventListener('change',refreshParameterConditions);
+$('resetParameters').onclick=()=>{for(const spec of parameterDefinitions)$('param-'+spec.key).value='';$('parameterError').textContent='';refreshParameterConditions();saveParameterState(true);};
+$('effort').addEventListener('change',()=>{refreshParameterConditions();saveParameterState(true);});
 document.addEventListener('starhub:modelchanged',configureParameters);
 if(ready)configureParameters();

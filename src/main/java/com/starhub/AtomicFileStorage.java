@@ -18,7 +18,7 @@ final class AtomicFileStorage {
     private String user(Connection c,long id)throws SQLException{return FileStorage.lockUser(c,id);}
     ObjectNode list(long id,JsonNode input)throws Exception {
         return database.run(UUID.randomUUID().toString(),c->{
-            String generation=user(c,id);ObjectNode result=FileLibrary.listPage(c,id,input);
+            String generation=user(c,id);ObjectNode result=FileLibrary.listPage(c,id,generation,input);
             try(PreparedStatement q=c.prepareStatement("SELECT used_bytes,reserved_bytes FROM file_storage_users WHERE user_id=? AND generation=?")){
                 q.setLong(1,id);q.setString(2,generation);try(ResultSet r=q.executeQuery()){if(!r.next())throw StorageFailure.unavailable();result.put("storedBytes",r.getLong(1)).put("reservedBytes",r.getLong(2)).put("used",Math.addExact(r.getLong(1),r.getLong(2)));}
             }
@@ -103,8 +103,9 @@ final class AtomicFileStorage {
             reserveCapacity(c,operation,plan.bytes);database.markReservation(operation);return pending(op);
         });
     }
-    private void actor(HttpServletRequest request,Connection c,long id,String generation)throws Exception {
+    private void actor(HttpServletRequest request,Connection c,long id,String generation,String operation)throws Exception {
         if(!generation.equals(user(c,id)))throw StorageFailure.unavailable();
+        var ticket=ProviderOperations.current();if(ticket!=null){ticket.verifyAccountCompletion(c,operation,id,generation);return;}
         var session=request.getSession(false);if(session!=null&&(!Objects.equals(session.getAttribute("starhub.account.id"),id)||!AccountServlet.activeSession(session)))throw new StorageFailure(401,"AUTHENTICATION_REQUIRED","登录状态已更改，请重新登录。");
     }
     private FileStorage.Operation uploading(Connection c,long id,String op,byte[] hash)throws Exception {
@@ -122,11 +123,11 @@ final class AtomicFileStorage {
         if(database.inside())throw new SQLException("Chunked stages require separately confirmed transactions");
         FileStorage.operationId(op);Plan plan=plan(metadata(files));byte[] hash=plan.hash();
         FileStorage.Operation original=database.readHint(c->{String generation;try(PreparedStatement q=c.prepareStatement("SELECT generation FROM users WHERE id=? AND active=1")){q.setLong(1,id);try(ResultSet r=q.executeQuery()){if(!r.next())throw StorageFailure.unavailable();generation=r.getString(1);}}FileStorage.Operation prior=existing(c,id,generation,op,hash);if(prior==null)throw new StorageFailure(409,"RESERVATION_REQUIRED","请先为此上传预留空间。");return prior;});
-        if("COMMITTED".equals(original.state))return database.run(op,c->{var current=uploading(c,id,op,hash);actor(request,c,id,current.generation);return current.result();});
+        if("COMMITTED".equals(original.state))return database.run(op,c->{var current=uploading(c,id,op,hash);actor(request,c,id,current.generation,op);return current.result();});
         ArrayNode fixed=(ArrayNode)ModelGateway.JSON.readTree(original.files);int index=0;
         for(var file:files){
             String fileId=fixed.get(index++).path("id").asText();ChunkedPayloadStore.Plan payload=payloads.plan(fileId,op,"FILE",id+":"+original.generation,Base64.getEncoder().encodeToString(hash)+":"+fileId,file.content);
-            AtomicPayloads.Parent parent=c->{var current=uploading(c,id,op,hash);actor(request,c,id,current.generation);if(!"RESERVED".equals(current.state))throw StorageFailure.pending();contentCapacity(c,op,plan.bytes);};
+            AtomicPayloads.Parent parent=c->{var current=uploading(c,id,op,hash);actor(request,c,id,current.generation,op);if(!"RESERVED".equals(current.state))throw StorageFailure.pending();contentCapacity(c,op,plan.bytes);};
             database.run(op,c->{parent.verify(c);ChunkedPayloadStore.Plan old=filePlan(c,fileId);if(old==null){try(PreparedStatement q=c.prepareStatement("INSERT INTO starhub_file_payloads(file_id,operation_id,plan_json) VALUES(?,?,?)")){q.setString(1,fileId);q.setString(2,op);q.setString(3,AtomicPayloads.json(payload).toString());q.executeUpdate();}}else if(!AtomicPayloads.json(old).equals(AtomicPayloads.json(payload)))throw new StorageFailure(409,"OPERATION_CONFLICT","上传内容与原预留不一致。");return null;});
             payloads.stage(payload,file.content,parent,c->refreshFileBudget(c,op,false));
         }
@@ -134,7 +135,7 @@ final class AtomicFileStorage {
     }
     private ObjectNode publish(HttpServletRequest request,long id,String op,List<FileStorage.Upload> files,Plan plan)throws Exception {
         return database.run(op,c->{
-            FileStorage.Operation prior=uploading(c,id,op,plan.hash());actor(request,c,id,prior.generation);if("COMMITTED".equals(prior.state))return prior.result();contentCapacity(c,op,plan.bytes);
+            FileStorage.Operation prior=uploading(c,id,op,plan.hash());actor(request,c,id,prior.generation,op);if("COMMITTED".equals(prior.state))return prior.result();contentCapacity(c,op,plan.bytes);
             ArrayNode fixed=(ArrayNode)ModelGateway.JSON.readTree(prior.files);int index=0;
             for(var file:files){String fixedId=fixed.get(index++).path("id").asText();ChunkedPayloadStore.Plan payload=filePlan(c,fixedId);if(payload==null)throw StorageFailure.pending();ChunkedPayloadStore.publish(c,payload);
                 try(PreparedStatement q=c.prepareStatement("INSERT INTO library_files(id,user_id,name,mime,size_bytes,content,storage_node_id,owner_generation) VALUES(?,?,?,?,?,NULL,?,?)")){q.setString(1,fixedId);q.setLong(2,id);q.setString(3,file.name);q.setString(4,file.mime);q.setInt(5,file.content.length);q.setInt(6,prior.node);q.setString(7,prior.generation);q.executeUpdate();}
@@ -163,6 +164,8 @@ final class AtomicFileStorage {
         // Existing stage pages already affect actual filesystem free space. Only
         // future insertion OR a complete explicit cancellation is reserved.
         long future=Set.of("CANCELLING","DELETING").contains(operation.state)?staged:Math.max(operation.logical-staged,staged);
+        // A final delete can also remove one account-scoped folder placement.
+        if("DELETING".equals(operation.state))future=Math.addExact(future,8192);
         Map<Integer,StorageCluster.Probe> probes=cluster.probes();Map<Integer,Long> old=held(c,op),total=totals(c),desired=new TreeMap<>();
         for(var probe:probes.values()){
             long budget=probe.budget(future),peak=Math.addExact(total.get(probe.node)-old.getOrDefault(probe.node,0L),Math.addExact(budget,Math.addExact(probe.budget(guestFutureBytes(c)),probe.budget(AtomicDatabase.MAX_COMPETING_TRANSACTION_BYTES))));
@@ -247,6 +250,7 @@ final class AtomicFileStorage {
         AtomicPayloads.Parent parent=c->{String generation=user(c,id);var current=existing(c,id,generation,op,hash);if(current==null||!"DELETING".equals(current.state))throw StorageFailure.pending();try(PreparedStatement q=c.prepareStatement("SELECT COUNT(*) FROM library_files l JOIN starhub_file_payloads p ON p.file_id=l.id WHERE l.id=? AND l.user_id=? AND l.owner_generation=? AND l.deleted_at IS NOT NULL AND p.deleting_op=?")){q.setString(1,file);q.setLong(2,id);q.setString(3,generation);q.setString(4,op);try(ResultSet r=q.executeQuery()){if(!r.next()||r.getLong(1)!=1)throw new SQLException("Deleted publication proof changed");}}refreshFileBudget(c,op,true);};
         payloads.cleanup(payload,parent,true,c->refreshFileBudget(c,op,false));
         return database.run(op,c->{parent.verify(c);if(!"CANCELLED".equals(ChunkedPayloadStore.state(c,payload)))throw StorageFailure.pending();
+            LibraryFolders.removePlacement(c,id,deletion.generation,file);
             try(PreparedStatement q=c.prepareStatement("DELETE FROM library_files WHERE id=? AND user_id=? AND owner_generation=? AND deleted_at IS NOT NULL")){q.setString(1,file);q.setLong(2,id);q.setString(3,deletion.generation);if(q.executeUpdate()!=1)throw new SQLException("File publication changed during cleanup");}
             try(PreparedStatement q=c.prepareStatement("UPDATE file_storage_users SET used_bytes=used_bytes-? WHERE user_id=? AND generation=? AND used_bytes>=?")){q.setLong(1,deletion.logical);q.setLong(2,id);q.setString(3,deletion.generation);q.setLong(4,deletion.logical);if(q.executeUpdate()!=1)throw new SQLException("Quota cleanup mismatch");}
             try(PreparedStatement q=c.prepareStatement("UPDATE file_storage_operations SET state='COMMITTED' WHERE op_id=? AND state='DELETING'")){q.setString(1,op);if(q.executeUpdate()!=1)throw new SQLException("Deletion terminal state changed");}releaseCapacity(c,op);deletion.state="COMMITTED";return deletion.result();

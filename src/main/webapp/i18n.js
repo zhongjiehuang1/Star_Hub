@@ -56,6 +56,8 @@ function localizedCatalog(raw){
   return copy;
 }
 function syncLanguageControls(){
+  const contactLink=document.getElementById('accountContactLink');
+  if(contactLink)contactLink.href=language==='zh'?'https://www.zhongjiehuang.com/zh/contact/':'https://www.zhongjiehuang.com/contact/';
   for(const id of ['language','setupLanguage']){
     const control=document.getElementById(id);if(!control)continue;
     control.textContent=language==='en'?'中文':'English';

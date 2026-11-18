@@ -30,7 +30,7 @@ class FileLibraryTest {
         assertEquals("oldest-file", result.path("files").get(0).path("id").asText());
         assertTrue(result.path("files").get(0).path("trashed").asBoolean());
         verify(totals).setLong(1,42); verify(page).setLong(1,42); verify(page).setInt(2,100); verify(page).setLong(3,5000);
-        verify(connection).prepareStatement("SELECT id,name,mime,size_bytes,deleted_at IS NOT NULL FROM library_files "
+        verify(connection).prepareStatement("SELECT id,name,mime,size_bytes,deleted_at IS NOT NULL,created_at FROM library_files "
                 + "WHERE user_id=? ORDER BY created_at DESC,id DESC LIMIT ? OFFSET ?");
         verify(summary).close(); verify(rows).close(); verify(totals).close(); verify(page).close();
     }

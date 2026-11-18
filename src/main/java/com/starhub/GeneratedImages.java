@@ -37,9 +37,12 @@ final class GeneratedImages {
     static void save(HttpServletRequest req,JsonNode request,ObjectNode result){
         String expected=request.path("expectedEmail").asText();if(expected.isBlank())return;
         try {
-            HttpSession session=req.getSession(false);
-            if(!AccountServlet.activeSession(session)||!Objects.equals(expected,session.getAttribute("starhub.account.email")))throw new IllegalStateException();
-            long user=(Long)session.getAttribute("starhub.account.id");List<Image> list=images(result.path("media"));
+            var dispatched=ProviderOperations.current();long user;
+            if(dispatched!=null)user=dispatched.accountForCompletion();
+            else {HttpSession session=req.getSession(false);
+                if(!AccountServlet.activeSession(session)||!Objects.equals(expected,session.getAttribute("starhub.account.email")))throw new IllegalStateException();
+                user=(Long)session.getAttribute("starhub.account.id");}
+            List<Image> list=images(result.path("media"));
             if(list.isEmpty())throw new IllegalArgumentException();
             String operation=request.path("storageOperationId").asText();
             if(operation.isBlank()){

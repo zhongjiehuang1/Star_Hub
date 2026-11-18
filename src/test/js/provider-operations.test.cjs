@@ -19,12 +19,18 @@ test('opaque model context changes request fingerprint without storing it or rep
 });
 test('confirmed original result replays without provider dispatch and requires terminal observation before retirement',async()=>{const f=fixture(),body={prompt:'synthetic question',apiKey:'synthetic credential'};await assert.rejects(f.api.request('run',body));const id=f.calls[0].body.operationId;assert.equal(f.api.acknowledge(id),false);f.state({operationState:'COMPLETED',httpStatus:200,result:{text:'saved answer'},durability:'dual'});const {response,operationId}=await f.api.request('run',body),answer=await response.json();assert.equal(operationId,id);assert.equal(answer.text,'saved answer');assert.equal(f.calls.filter(v=>v.url==='api/run').length,1);f.api.observe(id,answer);assert.equal(f.api.acknowledge(id),true);assert.equal(f.api.records().length,0);});
 test('changed intent requires explicit separation while preserving the original unknown request',async()=>{const f=fixture();await assert.rejects(f.api.request('run',{prompt:'first'}));const old=f.api.records()[0].id;await assert.rejects(f.api.prepare('run',{prompt:'changed'}));f.api.separate(old);const next=await f.api.prepare('run',{prompt:'changed'});assert.notEqual(next.id,old);assert.equal(f.api.records().length,2);f.api.observe(old,{operationId:old,operationState:'COMPLETED',durability:'dual'});f.api.acknowledge(old);assert.equal(f.api.records()[0].id,next.id);});
+test('an unconfirmed non-live request points to request history without changing the original identity',async()=>{
+ const f=fixture();await assert.rejects(f.api.request('run',{prompt:'first'}));const original=f.api.records()[0];
+ await assert.rejects(f.api.prepare('run',{prompt:'different'}),error=>error.code==='PROVIDER_OPERATION_UNKNOWN'&&error.operationId===original.id&&/Service settings → Request history/.test(error.message));
+ assert.deepEqual(f.api.records(),[original]);assert.equal(f.calls.filter(call=>call.url==='api/run').length,1);
+});
 test('missing or mismatched terminal proof cannot retire an unknown request',async()=>{const f=fixture(),p=await f.api.prepare('run',{prompt:'first'});assert.throws(()=>f.api.observe(p.id,{operationId:webcrypto.randomUUID(),operationState:'COMPLETED'}));assert.equal(f.api.acknowledge(p.id),false);f.api.markUnknown(p.id);assert.equal(f.api.records()[0].state,'UNKNOWN');});
 test('the original request is frozen in memory and concurrent preparation shares one identity',async()=>{const f=fixture(),payload={prompt:'first',parameters:{temperature:1}};const [a,b]=await Promise.all([f.api.prepare('run',payload),f.api.prepare('run',payload)]);assert.equal(a.id,b.id);assert.notEqual(a.fresh,b.fresh);payload.parameters.temperature=2;assert.equal(a.body.parameters.temperature,1);assert.equal(f.api.discardUnsent(a.fresh?a:b),true);});
 test('unavailable or corrupt identity storage refuses a new provider dispatch',async()=>{let calls=0;const api=create({storage:{getItem:()=>'{broken',setItem:()=>{}},crypto:webcrypto,actor:()=>'',tab:()=> 'a'.repeat(32),fetch:async()=>{calls++;}});await assert.rejects(api.request('run',{prompt:'test'}),/storage/);assert.equal(calls,0);});
 test('another account cannot query a previously owned receipt',async()=>{let owner='first@example.test',calls=0;const rows=new Map();const api=create({storage:{getItem:k=>rows.get(k)||null,setItem:(k,v)=>rows.set(k,v)},crypto:webcrypto,actor:()=>owner,tab:()=> 'a'.repeat(32),fetch:async()=>{calls++;}});const operation=await api.prepare('run',{prompt:'test'});owner='second@example.test';await assert.rejects(api.query(operation.id),/another account/);assert.equal(calls,0);assert.equal((await api.visible()).length,0);});
 
 function deferred(){let resolve;const promise=new Promise(done=>resolve=done);return {promise,resolve};}
+async function waitForPanel(panel,hidden){for(let i=0;i<100;i++){if(panel.hidden===hidden)return;await new Promise(resolve=>setTimeout(resolve,2));}assert.equal(panel.hidden,hidden);}
 function ownerFixture(hooks={}){
  const values=new Map(),calls=[];let email='first@example.test',epoch=0,ownerTab='a'.repeat(32),digests=0;
  const f={values,calls,email:()=>email,epoch:()=>epoch,tab:()=>ownerTab,
@@ -124,6 +130,13 @@ test('ready event renders original pending identities after the tab session init
  const f=await browserFixture();f.context.ownerTab='';await f.handlers.get('DOMContentLoaded')();assert.equal(f.panel.hidden,true);
  f.context.ownerTab='a'.repeat(32);await f.handlers.get('starhub:ready')();assert.equal(f.panel.hidden,false);assert.ok(f.panel.children.length>0);
 });
+test('batch history is hidden without deleting its saved receipt or hiding chat requests',async()=>{
+ const f=await browserFixture();await f.seeded.api.prepare('batch-submit',{inputs:['one']});
+ await f.handlers.get('starhub:ready')();
+ const visible=f.panel.children.flatMap(row=>row.children||[]).map(child=>child.textContent||'').join(' ');
+ assert.match(visible,/run/);assert.doesNotMatch(visible,/batch-submit/);
+ assert.equal(f.context.StarProviderOperations.records().length,2);
+});
 test('batch and realtime preparation wait settlement and reject same-account ABA after that wait',async()=>{
  for(const kind of ['batch-submit','realtime']){
   const wait=deferred(),rows=new Map();let epoch=0,calls=0;const api=create({storage:{getItem:k=>rows.get(k)||null,setItem:(k,v)=>rows.set(k,v)},crypto:webcrypto,actor:()=> 'owner@example.test',actorEpoch:()=>epoch,tab:()=> 'a'.repeat(32),settle:()=>wait.promise,fetch:async()=>{calls++;}});
@@ -152,15 +165,40 @@ test('a live request is not presented as unconfirmed, but remains recorded and i
  await new Promise(resolve=>setTimeout(resolve,0));
  assert.equal(f.panel.hidden,true);assert.equal(f.context.StarProviderOperations.records().length,1);
  f.context.StarProviderOperations.markUnknown(op.id);
- await new Promise(resolve=>setTimeout(resolve,0));
+ await waitForPanel(f.panel,false);
  assert.equal(f.panel.hidden,false);assert.equal(f.context.StarProviderOperations.records()[0].state,'UNKNOWN');
 });
 test('completed operation becomes recoverable if its result cannot yet be saved',async()=>{
  const f=await browserFixture();f.seeded.values.clear();
  const op=await f.context.StarProviderOperations.prepare('run',{prompt:'synthetic input'});
  f.context.StarProviderOperations.observe(op.id,{operationId:op.id,operationState:'COMPLETED',durability:'single'});
- await new Promise(resolve=>setTimeout(resolve,0));
+ await waitForPanel(f.panel,false);
  assert.equal(f.panel.hidden,false);assert.equal(f.context.StarProviderOperations.records()[0].state,'COMPLETED');
  assert.equal(f.context.StarProviderOperations.acknowledge(op.id),true);
- await new Promise(resolve=>setTimeout(resolve,0));assert.equal(f.panel.hidden,true);
+ await waitForPanel(f.panel,true);assert.equal(f.panel.hidden,true);
+});
+
+test('completed result stays hidden while its local presentation and save remain active',async()=>{
+ const f=fixture(),op=await f.api.prepare('run',{prompt:'synthetic'});
+ f.api.observe(op.id,{operationId:op.id,operationState:'COMPLETED',durability:'single'},{keepActive:true});
+ assert.equal(f.api.isActive(op.id),true);assert.equal(f.api.records()[0].state,'COMPLETED');
+ f.api.markUnknown(op.id);assert.equal(f.api.isActive(op.id),false);assert.equal(f.api.records()[0].state,'COMPLETED');
+});
+
+test('reconciles only a confirmed ended realtime relay without another provider request',async()=>{
+ const {reconcileFinishedRealtime}=require('../../main/webapp/provider-operations.js'),f=fixture(),op=await f.api.prepare('realtime',{model:'synthetic'});f.api.markUnknown(op.id);
+ f.state({operationState:'COMPLETED',durability:'single',result:{type:'realtime',status:'relay_ended',audioRetained:false}});
+ assert.equal(await reconcileFinishedRealtime(f.api,{id:op.id,kind:'realtime'},()=>true),true);assert.equal(f.api.records().length,0);assert.deepEqual(f.calls.map(v=>v.url),['api/provider-operation']);
+});
+test('keeps unknown, non-realtime, ambiguous and changed-owner records for recovery',async()=>{
+ const {reconcileFinishedRealtime}=require('../../main/webapp/provider-operations.js');
+ for(const state of [
+  {operationState:'UNKNOWN'},
+  {operationState:'COMPLETED',durability:'single',result:{type:'realtime',status:'relay_ended',audioRetained:true}},
+  {operationState:'COMPLETED_NO_RESULT',durability:'single'}
+ ]){
+  const f=fixture(),op=await f.api.prepare('realtime',{model:'synthetic'});f.api.markUnknown(op.id);f.state(state);
+  assert.equal(await reconcileFinishedRealtime(f.api,{id:op.id,kind:'realtime'},()=>true),false);assert.equal(f.api.records().length,1);
+ }
+ const f=fixture(),op=await f.api.prepare('run',{prompt:'synthetic'});f.api.markUnknown(op.id);assert.equal(await reconcileFinishedRealtime(f.api,{id:op.id,kind:'run'},()=>true),false);assert.equal(f.calls.length,0);
 });

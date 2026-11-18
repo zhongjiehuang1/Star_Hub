@@ -23,7 +23,15 @@ final class ProviderOperations {
     static final Set<String> IMAGE_TYPES=Set.of("image/png","image/jpeg","image/webp");
     record Media(byte[] bytes,String mime,String fileId,String durability){}
     @FunctionalInterface interface VerifyOwner {void verify(Connection c)throws Exception;}
-    record Owner(String identity,VerifyOwner verify){}
+    @FunctionalInterface interface VerifyNetwork {void verify()throws Exception;}
+    record Owner(String identity,VerifyOwner verify,VerifyOwner verifyCompletion,VerifyNetwork verifyNetwork){
+        Owner(String identity,VerifyOwner verify){this(identity,verify,verify,()->{});}
+        Owner(String identity,VerifyOwner verify,VerifyOwner verifyCompletion){this(identity,verify,verifyCompletion,()->{});}
+    }
+    static final class NotDispatched extends IOException {
+        final int status;final String code;
+        NotDispatched(StorageFailure failure){super(failure.getMessage(),failure);status=failure.status;code=failure.code;}
+    }
     record Receipt(String operationId,String state,int httpStatus,ObjectNode result,String durability){
         Receipt {if(result!=null)result.put("durability",durability).put("replicationMode",durability).put("degraded","single".equals(durability));}
     }
@@ -79,6 +87,14 @@ final class ProviderOperations {
         try(PreparedStatement q=c.prepareStatement("SELECT owner_hash,request_hash,kind,state,response_status,result_cipher,dispatch_hash FROM starhub_provider_operations WHERE operation_id=?")){q.setString(1,operation);try(ResultSet r=q.executeQuery()){
             if(!r.next())return null;if(!MessageDigest.isEqual(owner,r.getBytes(1))||!MessageDigest.isEqual(request,r.getBytes(2))||!kind.equals(r.getString(3)))throw new StorageFailure(409,"PROVIDER_OPERATION_CONFLICT","模型操作编号已绑定其他请求；请先核对原结果。");return receipt(c,principal,operation,r.getString(4),r.getInt(5),r.getBytes(6),r.getBytes(7));
         }}
+    }
+    // Read only the completed result bound to this exact owner and request.
+    // The caller owns the transaction and must apply its own revision checks.
+    Receipt completedBound(Connection c,Owner principal,String operation,String kind,JsonNode input)throws Exception{
+        FileStorage.operationId(operation);principal.verify.verify(c);
+        Receipt value=bound(c,principal,owner(principal),operation,kind,request(principal,kind,input));
+        if(value==null||!"COMPLETED".equals(value.state())||value.httpStatus()!=200||value.result()==null)throw new StorageFailure(409,"MEMORY_EXTRACTION_PENDING","原记忆提取结果尚未确认。 ");
+        return value;
     }
     private record ImagePlan(ChunkedPayloadStore.Plan plan,String binding,String mime,byte[] plainHash){}
     private record Intent(byte[] dispatch,int status,String terminal,ChunkedPayloadStore.Plan plan,String binding,List<ImagePlan> images,String account){}
@@ -202,14 +218,37 @@ final class ProviderOperations {
     final class Ticket {
         final Owner owner;final String operation;final byte[] dispatchHash;final ReplicaAuthority.Lease lease;private final AtomicBoolean finished=new AtomicBoolean();private final AtomicBoolean attempted=new AtomicBoolean();
         Ticket(Owner owner,String operation,byte[] dispatchHash,ReplicaAuthority.Lease lease){this.owner=owner;this.operation=operation;this.dispatchHash=dispatchHash;this.lease=lease;}
-        void beforeNetwork()throws IOException {
+        synchronized void beforeNetwork()throws IOException {
             if(finished.get())throw new IOException("Provider operation has ended");try{database.unchangedPermit(lease);}catch(SQLException unavailable){throw new IOException("Provider dispatch authority changed; query the original operation",unavailable);}
+            if(!attempted.get())try{owner.verifyNetwork.verify();}catch(StorageFailure denied){throw new NotDispatched(denied);}catch(Exception unavailable){throw new NotDispatched(StorageFailure.unavailable());}
             attempted.set(true);
         }
+        // Check the durable dispatch and its original owner, not just the replica lease.
+        void verifyOwnerAndAuthority()throws Exception {
+            if(finished.get())throw new IOException("Provider operation has ended");
+            database.unchangedPermit(lease);
+            database.run(operation,c->{
+                verifyTicket(c,this);owner.verify.verify(c);
+                try(PreparedStatement q=c.prepareStatement("SELECT state FROM starhub_provider_operations WHERE operation_id=?")){q.setString(1,operation);try(ResultSet r=q.executeQuery()){if(!r.next()||!"SENT".equals(r.getString(1)))throw pending(operation);}}
+                return null;
+            });
+            database.unchangedPermit(lease);
+            if(finished.get())throw new IOException("Provider operation has ended");
+        }
         void releaseLibraryQuota(Connection c,long user)throws Exception {
-            verifyTicket(c,this);owner.verify.verify(c);
+            verifyTicket(c,this);owner.verifyCompletion.verify(c);
             try(PreparedStatement q=c.prepareStatement("SELECT account_user_id,image_budget_bytes,logical_reserved FROM starhub_provider_operations WHERE operation_id=? FOR UPDATE")){q.setString(1,operation);try(ResultSet r=q.executeQuery()){if(!r.next()||r.getLong(1)!=user||r.getLong(2)<=0||r.getLong(3)!=r.getLong(2))throw new SQLException("Provider image quota transfer changed");}}
             releaseLogical(c,operation);
+        }
+        long accountForCompletion()throws SQLException {
+            String[] fields=owner.identity.split(":",4);
+            if(fields.length!=4||!"account".equals(fields[0]))throw new SQLException("Provider ticket has no account owner");
+            try{long user=Long.parseLong(fields[1]);if(user<1)throw new NumberFormatException();return user;}
+            catch(NumberFormatException invalid){throw new SQLException("Provider ticket has invalid account owner",invalid);}
+        }
+        void verifyAccountCompletion(Connection c,String op,long user,String generation)throws Exception {
+            if(!operation.equals(op)||!owner.identity.startsWith("account:"+user+":"+generation+":"))throw new SQLException("Provider ticket and library operation differ");
+            verifyTicket(c,this);owner.verifyCompletion.verify(c);
         }
         void refreshLibraryCapacity(Connection c)throws Exception {verifyTicket(c,this);reserve(c,operation,false);}
         void prepareAccountImages(ObjectNode result)throws Exception {
@@ -221,6 +260,7 @@ final class ProviderOperations {
         AutoCloseable enter(){if(CURRENT.get()!=null)throw new IllegalStateException("Overlapping provider dispatch context");CURRENT.set(this);return ()->{if(CURRENT.get()==this)CURRENT.remove();};}
         Receipt complete(int status,ObjectNode result)throws Exception {
             if(finished.get())throw pending(operation);String state="COMPLETED";ObjectNode stored=result.deepCopy();boolean account=owner.identity.startsWith("account:"),cannotRetain=false;
+            Owner completionOwner=new Owner(owner.identity,owner.verifyCompletion);
             List<ImagePlan> imagePlans=new ArrayList<>();Map<String,byte[]> sourceImages=new HashMap<>();int imageIndex=0;
             for(JsonNode item:stored.path("media"))if(item.isObject()&&item.path("type").asText().equals("image")){
                 if(imageIndex>=MAX_IMAGES)throw new IOException("Too many generated images");ObjectNode media=(ObjectNode)item;String mime=media.path("mime").asText();
@@ -242,12 +282,12 @@ final class ProviderOperations {
             ChunkedPayloadStore.Plan plan=payloads.plan(payloadId,operation,"PROVIDER_RESULT",owner.identity,cipherBinding,encrypted);
             Intent prepared=new Intent(dispatchHash,status,terminalState,plan,cipherBinding,List.copyOf(imagePlans),accountReader(owner));
             Receipt already=database.run(operation,c->{
-                owner.verify.verify(c);Intent old=intent(c,operation);
+                owner.verifyCompletion.verify(c);Intent old=intent(c,operation);
                 if(old!=null){verifyIntent(owner,operation,dispatchHash,old);requireSameIntent(prepared,old);}
                 try(PreparedStatement q=c.prepareStatement("SELECT state,response_status,result_cipher,dispatch_hash FROM starhub_provider_operations WHERE operation_id=?")){
                     q.setString(1,operation);try(ResultSet r=q.executeQuery()){
                         if(!r.next())throw pending(operation);String current=r.getString(1);
-                        if(Set.of("COMPLETED","COMPLETED_NO_RESULT").contains(current))return receipt(c,owner,operation,current,r.getInt(2),r.getBytes(3),r.getBytes(4));
+                        if(Set.of("COMPLETED","COMPLETED_NO_RESULT").contains(current))return receipt(c,completionOwner,operation,current,r.getInt(2),r.getBytes(3),r.getBytes(4));
                     }
                 }
                 verifyTicket(c,this);
@@ -261,13 +301,13 @@ final class ProviderOperations {
             });
             if(already!=null){finished.set(true);return already;}
             for(var image:prepared.images){byte[] raw=sourceImages.get(image.plan.id()),cipher=payloads.encrypt(image.plan.id(),image.binding,raw);
-                payloads.stage(image.plan,cipher,c->{owner.verify.verify(c);verifyTicket(c,this);Intent current=intent(c,operation);if(current==null)throw pending(operation);verifyIntent(owner,operation,dispatchHash,current);requireSameIntent(prepared,current);reserve(c,operation);},c->reserve(c,operation,false));
+                payloads.stage(image.plan,cipher,c->{owner.verifyCompletion.verify(c);verifyTicket(c,this);Intent current=intent(c,operation);if(current==null)throw pending(operation);verifyIntent(owner,operation,dispatchHash,current);requireSameIntent(prepared,current);reserve(c,operation);},c->reserve(c,operation,false));
             }
-            payloads.stage(plan,encrypted,c->{owner.verify.verify(c);verifyTicket(c,this);Intent current=intent(c,operation);if(current==null)throw pending(operation);verifyIntent(owner,operation,dispatchHash,current);requireSameIntent(prepared,current);reserve(c,operation);},c->reserve(c,operation,false));
+            payloads.stage(plan,encrypted,c->{owner.verifyCompletion.verify(c);verifyTicket(c,this);Intent current=intent(c,operation);if(current==null)throw pending(operation);verifyIntent(owner,operation,dispatchHash,current);requireSameIntent(prepared,current);reserve(c,operation);},c->reserve(c,operation,false));
             Receipt completed=database.run(operation,c->{
-                owner.verify.verify(c);Intent current=intent(c,operation);if(current==null)throw pending(operation);verifyIntent(owner,operation,dispatchHash,current);requireSameIntent(prepared,current);
+                owner.verifyCompletion.verify(c);Intent current=intent(c,operation);if(current==null)throw pending(operation);verifyIntent(owner,operation,dispatchHash,current);requireSameIntent(prepared,current);
                 try(PreparedStatement q=c.prepareStatement("SELECT state,response_status,result_cipher,dispatch_hash FROM starhub_provider_operations WHERE operation_id=?")){
-                    q.setString(1,operation);try(ResultSet r=q.executeQuery()){if(!r.next())throw pending(operation);return receipt(c,owner,operation,r.getString(1),r.getInt(2),r.getBytes(3),r.getBytes(4));}
+                    q.setString(1,operation);try(ResultSet r=q.executeQuery()){if(!r.next())throw pending(operation);return receipt(c,completionOwner,operation,r.getString(1),r.getInt(2),r.getBytes(3),r.getBytes(4));}
                 }
             });
             if(!Set.of("COMPLETED","COMPLETED_NO_RESULT").contains(completed.state))throw pending(operation);

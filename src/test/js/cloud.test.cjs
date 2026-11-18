@@ -11,14 +11,35 @@ function fixture(handler,serverInfo={serverId:2},environment={}){
   close(){this.open=false;}
  }
  const element=id=>{if(!elements.has(id))elements.set(id,new Element());return elements.get(id);};
- const context=vm.createContext({StarProviderMedia:{references:require('../../main/webapp/provider-media.js').references,release(){}},console,setInterval(){},setTimeout,crypto:require('node:crypto').webcrypto,TextEncoder,atob:s=>Buffer.from(s,'base64').toString('binary'),btoa:s=>Buffer.from(s,'binary').toString('base64'),sessionStorage:{getItem(k){return stored.get(k)||null;},setItem(k,v){stored.set(k,v);},removeItem(k){stored.delete(k);}},accountEmail:'owner@example.test',accountIdentityRevision:0,$:element,
-  document:{createElement:()=>new Element(),createTextNode:text=>({textContent:text}),addEventListener(){}},window:{addEventListener(){}},language:'en',
-  fetch:async(url,options)=>{if(url==='api/server')return {ok:true,json:async()=>serverInfo};if(url==='api/cluster-health')return {ok:true,json:async()=>({status:'ready'})};const request=JSON.parse(options.body);requests.push(request);const value=await handler(request);return value?.__http?{ok:false,status:value.__http,headers:{get:name=>name==='Retry-After'?value.__retryAfter:null},json:async()=>value.body}:{ok:true,status:200,headers:{get:name=>name==='X-Four-Project-Durability'?(Object.hasOwn(value||{},'__proof')?value.__proof:'dual'):null},json:async()=>{let result=request.action==='reserveUpload'&&!value?.state?{...value,state:'RESERVED'}:value;if(result&&request.operationId&&['upload','deleteFile','trashFile','restoreFile','saveChat','deleteChat'].includes(request.action))result={...result,operationId:request.operationId,operationState:'COMMITTED'};return result;}};},confirm:()=>true,...environment});
+ const context=vm.createContext({StarProviderMedia:{references:require('../../main/webapp/provider-media.js').references,release(){}},console,setInterval(){},setTimeout,clearTimeout,crypto:require('node:crypto').webcrypto,TextEncoder,atob:s=>Buffer.from(s,'base64').toString('binary'),btoa:s=>Buffer.from(s,'binary').toString('base64'),sessionStorage:{getItem(k){return stored.get(k)||null;},setItem(k,v){stored.set(k,v);},removeItem(k){stored.delete(k);}},accountEmail:'owner@example.test',accountIdentityRevision:0,$:element,
+  Option:function(text,value){const e=new Element();e.textContent=text;e.value=value;return e;},document:{createElement:()=>new Element(),createTextNode:text=>({textContent:text}),addEventListener(){}},window:{addEventListener(){}},language:'en',
+  fetch:async(url,options)=>{if(url==='api/server')return {ok:true,json:async()=>serverInfo};if(url==='api/cluster-health')return {ok:true,json:async()=>({status:'ready'})};const request=JSON.parse(options.body);requests.push(request);const value=await handler(request);return value?.__http?{ok:false,status:value.__http,headers:{get:name=>name==='Retry-After'?value.__retryAfter:null},json:async()=>value.body}:{ok:true,status:200,headers:{get:name=>name==='X-Four-Project-Durability'?(Object.hasOwn(value||{},'__proof')?value.__proof:'dual'):null},json:async()=>{let result=request.action==='reserveUpload'&&!value?.state?{...value,state:'RESERVED'}:value;if(result&&request.operationId&&['upload','deleteFile','trashFile','restoreFile','saveChat','deleteChat','createFolder','renameFolder','deleteFolder','moveFile'].includes(request.action))result={...result,operationId:request.operationId,operationState:'COMMITTED'};return result;}};},confirm:()=>true,...environment});
  vm.runInContext(fs.readFileSync(path.join(root,'i18n-data.js'),'utf8'),context);
  vm.runInContext("function t(key,...args){return (UI_EN[key]||key).replace(/\\{(\\d+)\\}/g,(_,n)=>args[n]);}",context);
  vm.runInContext(fs.readFileSync(path.join(root,'cloud.js'),'utf8'),context);
  return {elements,requests,element,stored,context,run:code=>vm.runInContext(code,context)};
 }
+test('a save queued during deletion cannot recreate a successfully deleted conversation',async()=>{
+ let releaseDelete,deleteStarted;
+ const started=new Promise(resolve=>deleteStarted=resolve),gate=new Promise(resolve=>releaseDelete=resolve);
+ const f=fixture(async request=>{if(request.action==='deleteChat'){deleteStarted();await gate;return {}; }return {revision:4};});
+ f.run("cloudReady=true;globalThis.showError=()=>{};globalThis.chats=[{id:'old',title:'old',revision:3,messages:[{role:'user',content:'private'}]}];globalThis.oldChat=chats[0];oldChat.deleting=true");
+ const deleting=f.run('deleteCloudChat(oldChat)');await started;
+ const staleSave=f.run('saveCloudChats()');releaseDelete();await deleting;await staleSave;
+ assert.deepEqual(f.requests.map(x=>x.action),['deleteChat']);assert.equal(f.run('oldChat.revision'),3);assert.equal(f.run('oldChat.deleted'),true);
+ f.run('delete oldChat.deleting');await f.run('saveCloudChats()');assert.deepEqual(f.requests.map(x=>x.action),['deleteChat']);
+ f.run('chats=[]');await f.run('saveCloudChats()');assert.deepEqual(f.requests.map(x=>x.action),['deleteChat']);
+});
+test('cloud deletion fails visibly if account conversations are not ready',async()=>{
+ const f=fixture(()=>({}));f.run("globalThis.oldChat={id:'old',revision:3,messages:[]};cloudReady=false");
+ await assert.rejects(f.run('deleteCloudChat(oldChat)'),/still loading/);assert.equal(f.requests.length,0);assert.equal(f.run('oldChat.revision'),3);
+ f.run('cloudReady=true;cloudFailed=true;oldChat.revision=0');await assert.rejects(f.run('deleteCloudChat(oldChat)'),/unconfirmed/);assert.equal(f.requests.length,0);
+});
+test('cloud messages preserve only the supported live weather source',()=>{
+ const f=fixture(()=>({}));
+ assert.equal(f.run("cleanMessage({role:'assistant',content:'Rain',details:{webSearchUsed:true,webCitations:[],realtimeSource:'oai-weather'}}).details.realtimeSource"),'oai-weather');
+ assert.equal(f.run("cleanMessage({role:'assistant',content:'Rain',details:{webSearchUsed:true,webCitations:[],realtimeSource:'untrusted'}}).details.realtimeSource"),undefined);
+});
 function page(number,total=6000,files){return {files:files||Array.from({length:100},(_,i)=>({id:`file-${number}-${i}`,name:`File ${i}`,size:1024,trashed:false})),used:900_000_000,quota:2_000_000_000,maxFile:4*1024*1024,page:number,pageSize:100,total,hasNext:number*100<total};}
 test('file library requests pages beyond 5000 and displays the backend decimal quota',async()=>{
  const f=fixture(request=>page(request.page));await f.run('refreshFiles(51)');
@@ -33,11 +54,48 @@ test('file selections survive page changes and are removed when a file is trashe
  const first=f.element('libraryFiles').children[0],checkbox=first.children[0].children[0];checkbox.checked=true;checkbox.onchange();
  await f.run('refreshFiles(2)');assert.equal(f.element('fileLibrarySelection').textContent,'1 files selected');
  await f.run('refreshFiles(1)');assert.equal(f.element('libraryFiles').children[0].children[0].children[0].checked,true);
- await f.element('libraryFiles').children[0].children[1].onclick();assert.equal(f.element('fileLibrarySelection').textContent,'0 files selected');
+ await f.element('libraryFiles').children[0].children[3].children[1].children[0].onclick();assert.equal(f.element('fileLibrarySelection').textContent,'0 files selected');
+});
+test('selected files on multiple pages are confirmed and moved to trash once',async()=>{
+ const prompts=[],files=[{id:'one',name:'one',size:1},{id:'two',name:'two',size:1}],trashed=new Set();
+ const f=fixture(request=>request.action==='listFiles'?page(request.page,200,files.filter((_,i)=>i===request.page-1&&!trashed.has(files[i].id))):(trashed.add(request.id),{ok:true}),undefined,{confirm:message=>(prompts.push(message),true)});
+ f.run('clusterAvailable=true');await f.run('refreshFiles(1)');let check=f.element('libraryFiles').children[0].children[0].children[0];check.checked=true;check.onchange();
+ await f.run('refreshFiles(2)');check=f.element('libraryFiles').children[0].children[0].children[0];check.checked=true;check.onchange();
+ await f.element('trashSelectedFiles').onclick();
+ assert.match(prompts[0],/2 selected files/);assert.deepEqual(f.requests.filter(x=>x.action==='trashFile').map(x=>x.id),['one','two']);assert.equal(f.run('fileLibraryChecked.size'),0);assert.match(f.element('libraryMessage').textContent,/Moved 2 files/);
+});
+test('cancelled and incomplete bulk operations preserve unprocessed selections',async()=>{
+ for(const scenario of ['cancel','failure','unknown']){
+  let f;const seen=[];f=fixture(request=>{if(request.action==='listFiles')return page(1,3,[{id:'one',name:'one',size:1},{id:'two',name:'two',size:1},{id:'three',name:'three',size:1}]);seen.push(request.id);if(request.id==='two')return scenario==='unknown'?Promise.reject(Error('network lost')):{__http:409,body:{error:'conflict'}};return {ok:true};},undefined,{confirm:()=>scenario!=='cancel'});
+  f.run('clusterAvailable=true');await f.run('refreshFiles(1)');f.run("fileLibraryChecked.add('one');fileLibraryChecked.add('two');fileLibraryChecked.add('three')");await f.element('trashSelectedFiles').onclick();
+  if(scenario==='cancel'){assert.deepEqual(seen,[]);assert.equal(f.run('fileLibraryChecked.size'),3);}
+  else{assert.deepEqual(seen,['one','two']);assert.deepEqual(Array.from(f.run('[...fileLibraryChecked]')),['two','three']);assert.match(f.element('libraryMessage').textContent,scenario==='unknown'?/unconfirmed/:/conflict/);}
+ }
+});
+test('bulk trash prevents duplicate clicks and stops after the account changes',async()=>{
+ let release;const sent=[];const f=fixture(request=>{if(request.action==='listFiles')return page(1,2,[{id:'one',name:'one',size:1},{id:'two',name:'two',size:1}]);sent.push(request.id);return new Promise(resolve=>{release=resolve;});});
+ f.run('clusterAvailable=true');await f.run('refreshFiles(1)');f.run("fileLibraryChecked.add('one');fileLibraryChecked.add('two')");
+ const first=f.element('trashSelectedFiles').onclick(),second=f.element('trashSelectedFiles').onclick();while(!release)await new Promise(resolve=>setImmediate(resolve));assert.deepEqual(sent,['one']);
+ f.run("accountEmail='other@example.test';accountIdentityRevision++;fileLibraryBatch=null;fileLibraryChecked.clear();fileLibraryChecked.add('other-file')");release({ok:true});await Promise.all([first,second]);assert.deepEqual(sent,['one']);assert.deepEqual(Array.from(f.run('[...fileLibraryChecked]')),['other-file']);
+});
+test('retrying an unconfirmed bulk item reuses its original operation identity',async()=>{
+ let lost=true;const f=fixture(request=>{if(request.action==='listFiles')return page(1,1,[{id:'one',name:'one',size:1}]);if(lost){lost=false;throw Error('lost reply');}return {ok:true};});
+ f.run('clusterAvailable=true');await f.run('refreshFiles(1)');f.run("fileLibraryChecked.add('one')");await f.element('trashSelectedFiles').onclick();assert.equal(f.run('fileLibraryChecked.has(\'one\')'),true);
+ await f.element('trashSelectedFiles').onclick();const actions=f.requests.filter(x=>x.action==='trashFile');assert.equal(actions.length,2);assert.equal(actions[0].operationId,actions[1].operationId);assert.equal(f.run('fileLibraryChecked.size'),0);
+});
+test('bulk trash is hidden in the trash view and never permanently deletes files',async()=>{
+ const f=fixture(()=>page(1,1,[{id:'one',name:'one',size:1,trashed:true}]));f.run("clusterAvailable=true;fileLibraryView='trash';fileLibraryChecked.add('one')");await f.run('refreshFiles(1)');await f.element('trashSelectedFiles').onclick();assert.equal(f.element('trashSelectedFiles').hidden,true);assert.equal(f.requests.some(x=>['trashFile','deleteFile'].includes(x.action)),false);
 });
 test('an empty last page returns to the current final page after deletion',async()=>{
  const f=fixture(request=>page(request.page,100,request.page===2?[]:undefined));await f.run('refreshFiles(2)');
  assert.deepEqual(f.requests.map(r=>r.page),[2,1]);assert.equal(f.element('fileLibraryNext').disabled,true);
+});
+test('a successful library read clears only the earlier library read error',async()=>{
+ let fail=true;const f=fixture(()=>fail?{__http:503,body:{code:'CLUSTER_UNAVAILABLE',error:'服务器故障，请等待恢复'}}:page(1,0,[]));
+ await f.run('refreshFiles(1)');assert.match(f.element('libraryMessage').textContent,/Server unavailable/);
+ fail=false;await f.run('refreshFiles(1)');assert.equal(f.element('libraryMessage').textContent,'');
+ fail=true;await f.run('refreshFiles(1)');f.element('libraryMessage').textContent='Upload completed';
+ fail=false;await f.run('refreshFiles(1)');assert.equal(f.element('libraryMessage').textContent,'Upload completed');
 });
 test('a delayed older request cannot replace the more recent page',async()=>{
  const pending=new Map(),f=fixture(request=>new Promise(resolve=>pending.set(request.page,resolve)));
@@ -417,4 +475,55 @@ test('bounded chat opt-in falls back once to standard read with the identical pa
 test('network ambiguity shows pending and preserves the original mutation request identity',async()=>{
  const f=fixture(()=>{throw Error('connection lost');});await assert.rejects(f.run("workspaceRequest({action:'deleteChat',id:'pending',revision:1})"),e=>e.code==='OPERATION_PENDING'&&!!e.operationId);
  assert.equal(f.requests.length,1);assert.equal(f.stored.size,1);assert.equal(f.element('workspaceActivity').hidden,false);assert.match(f.element('workspaceActivity').textContent,/not confirmed/);
+});
+
+test('a successful background chat save stays silent while it is pending',async()=>{
+ let release;const f=fixture(()=>new Promise(resolve=>release=resolve));
+ const save=f.run("workspaceRequest({action:'saveChat',id:'draft',title:'Draft',data:{draft:'typing',messages:[]},revision:0})");
+ while(!release)await new Promise(resolve=>setImmediate(resolve));
+ assert.equal(f.element('workspaceActivity').hidden,true);
+ release({revision:1});await save;assert.equal(f.element('workspaceActivity').hidden,true);
+});
+test('an unconfirmed background chat save still displays its failure',async()=>{
+ const f=fixture(()=>{throw Error('connection lost');});
+ await assert.rejects(f.run("workspaceRequest({action:'saveChat',id:'draft',title:'Draft',data:{draft:'typing',messages:[]},revision:0})"),e=>e.code==='OPERATION_PENDING'&&!!e.operationId);
+ assert.equal(f.element('workspaceActivity').hidden,false);assert.match(f.element('workspaceActivity').textContent,/not confirmed/);
+});
+test('a background chat save completing does not hide a concurrent foreground request',async()=>{
+ const pending=new Map(),f=fixture(request=>new Promise(resolve=>pending.set(request.action,resolve)));
+ const save=f.run("workspaceRequest({action:'saveChat',id:'draft',title:'Draft',data:{draft:'typing',messages:[]},revision:0})");
+ const read=f.run("workspaceRequest({action:'listFiles'})");
+ while(pending.size<2)await new Promise(resolve=>setImmediate(resolve));
+ assert.equal(f.element('workspaceActivity').hidden,false);
+ pending.get('saveChat')({revision:1});await save;
+ assert.equal(f.element('workspaceActivity').hidden,false);assert.equal(f.element('workspaceActivity').attributes['aria-busy'],'true');
+ pending.get('listFiles')({files:[]});await read;assert.equal(f.element('workspaceActivity').hidden,true);
+});
+
+test('folder navigation and moves use the server-backed folder identity',async()=>{
+ const folder={id:'11111111-1111-4111-8111-111111111111',name:'Projects'},file={id:'22222222-2222-4222-8222-222222222222',name:'notes.txt',mime:'text/plain',size:1024,trashed:false};
+ const f=fixture(request=>request.action==='listFiles'?{...page(1,1,[file]),folders:[folder]}:{ok:true});
+ await f.run('refreshFiles(1)');const rows=f.element('libraryFiles').children;assert.equal(rows[0].children[0].children[1].textContent,'Projects');
+ rows[0].children[0].onclick();await new Promise(resolve=>setImmediate(resolve));assert.equal(f.requests.at(-1).folderId,folder.id);
+ const fileRow=f.element('libraryFiles').children[0],actions=fileRow.children[3].children[1],select=actions.children[2];select.value=folder.id;await actions.children[3].onclick();
+ const move=f.requests.find(r=>r.action==='moveFile');assert.equal(move.id,file.id);assert.equal(move.folderId,folder.id);assert.match(move.operationId,/^[0-9a-f-]{36}$/);
+});
+test('upload captures the original folder even if navigation changes during file reading',async()=>{
+ let release;const folder='11111111-1111-4111-8111-111111111111',f=fixture(request=>request.action==='listFiles'?page(1,0,[]):request.action==='upload'?{id:'22222222-2222-4222-8222-222222222222'}:{ok:true},undefined,{readFileData:()=>new Promise(resolve=>{release=resolve;})});
+ f.run(`fileLibraryFolder='${folder}'`);f.element('libraryUpload').files=[{name:'note.txt',size:1}];const pending=f.element('libraryUpload').onchange();f.run("fileLibraryFolder=''");release('data:text/plain;base64,YQ==');await pending;
+ assert.equal(f.requests.find(r=>r.action==='moveFile').folderId,folder);
+});
+
+test('a folder deleted on another device returns to the root without losing files',async()=>{
+ const folder='11111111-1111-4111-8111-111111111111';let first=true;
+ const f=fixture(request=>{if(first){first=false;return {__http:404,body:{code:'FOLDER_NOT_FOUND',error:'gone'}};}return page(1,0,[]);});
+ f.run(`fileLibraryFolder='${folder}'`);await f.run('refreshFiles(1)');assert.equal(f.run('fileLibraryFolder'),'');assert.equal(f.requests[1].folderId,'');assert.match(f.element('libraryMessage').textContent,/no longer exists/);
+});
+test('cloud persistence retains an unfinished or failed transcript guard without altering text',()=>{
+ const f=fixture(()=>({}));
+ for(const flag of ['mapTranscriptPending','mapTranscriptFailed']){
+  const result=f.run(`cleanMessage({role:'user',content:'滁州地图',${flag}:true})`);
+  assert.equal(result.content,'滁州地图');assert.equal(result.mapTranscriptFailed,true);
+ }
+ assert.equal(f.run("cleanMessage({role:'user',content:'滁州地图'}).mapTranscriptFailed"),undefined);
 });

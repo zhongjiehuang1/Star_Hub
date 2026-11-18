@@ -32,3 +32,8 @@ test('startup preloads catalog, renders authenticated chats early, and gates rea
 test('an older plain restore cannot overwrite a newer bundled restore in the same account revision',async()=>{
  const f=accountFixture(),plain=f.run('restoreAccount()'),bundled=f.run('restoreAccount(true)');f.pending[1].resolve(response('owner@example.test',{workspaceBootstrap:{marker:'latest'}}));await bundled;f.pending[0].resolve(response('owner@example.test',{keys:{example:'older-key'}}));assert.equal(await plain,false);assert.equal(f.keys.get('example'),'synthetic-key');assert.equal(f.run('consumeWorkspaceBootstrap().marker'),'latest');
 });
+
+test('a signed-out restore retains the current account context until reauthentication',async()=>{
+ const f=accountFixture(),first=f.run('restoreAccount()');f.pending[0].resolve(response('owner@example.test',{displayName:'Example Name'}));await first;assert.equal(f.run('accountDisplayName'),'Example Name');
+ f.run('requestReauthentication=email=>{reauthEmail=email;}');const second=f.run('restoreAccount()');f.pending[1].resolve({ok:true,json:async()=>({signedIn:false})});await second;assert.equal(f.run('accountDisplayName'),'Example Name');assert.equal(f.run('reauthEmail'),'owner@example.test');
+});

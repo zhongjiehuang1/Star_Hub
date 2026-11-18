@@ -7,7 +7,7 @@ test('current directions keep supported tools and reject old selections',()=>{
  assert(vm.runInContext("directionModels('image').some(m=>m.id==='gpt-image-2.6-flare')",ctx));
  assert(vm.runInContext("directionModels('voice').some(m=>m.id==='gpt-realtime-2.1-mini')",ctx));
  assert.equal(vm.runInContext("directionModels('video').length",ctx),0);
- assert(!catalog.models.some(m=>m.id==='gpt-4.1-mini'));assert(!vm.runInContext("directionModels('more').some(m=>m.categories.includes('embeddings'))",ctx));assert(vm.runInContext("directionModels('more').some(m=>m.id==='gpt-6.1-sol:batch')",ctx));
+ assert(!catalog.models.some(m=>m.id==='gpt-4.1-mini'));assert.equal(vm.runInContext("directionModels('more').length",ctx),0);
 });
 test('homepage hides endpoint and source UI but keeps model details and account key controls',()=>{
  const html=fs.readFileSync(path.join(web,'index.html'),'utf8');
@@ -51,23 +51,48 @@ test('defaults are explicit, order independent, and never override a saved usabl
  assert.equal(vm.runInContext("preferredModelId('openai','general',directionModels('general').filter(m=>m.provider==='openai'),'gpt-6-astra')",ctx),'gpt-6-astra');
  assert.equal(vm.runInContext("preferredModelId('openai','voice',directionModels('voice').filter(m=>m.provider==='openai'),'gpt-transcribe')",ctx),'gpt-transcribe');
  assert.equal(vm.runInContext("preferredModelId('openai','general',directionModels('general').filter(m=>m.provider==='openai').reverse())",ctx),'gpt-6.1-sol');
+ assert.equal(vm.runInContext("preferredModelId('openai','general',directionModels('general').filter(m=>m.provider==='openai'),'gpt-6.1-sol:batch')",ctx),'gpt-6.1-sol');
 });
-test('visible filters exclude embedding models and unused categories but retain batch',()=>{
+test('old saved batch model falls back to normal chat when the workspace starts',()=>{
+ const catalog=JSON.parse(fs.readFileSync(path.join(web,'../resources/catalog.json'),'utf8'));
+ const direction={value:'general',options:['general','image','video','voice'].map(value=>({value}))};Object.defineProperty(direction,'selectedOptions',{get(){return this.options.filter(o=>o.value===this.value)}});
+ const library={...direction,options:direction.options.map(o=>({...o}))};Object.defineProperty(library,'selectedOptions',{get(){return this.options.filter(o=>o.value===this.value)}});
+ const controls={provider:{value:'openai'},modelDirection:direction,libraryDirection:library,model:{value:'',replaceChildren(){this.value='';},append(){}},directionNotice:{},apiKey:{},toggleKey:{setAttribute(){}}};
+ const settings=new Map([['openai','gpt-6.1-sol:batch']]),directionSettings=new Map([['openai|more','gpt-6.1-sol:batch']]);let configured;
+ const ctx=vm.createContext({catalog,providers:catalog.providers,settings,directionSettings,keys:new Map(),language:'en',t:x=>x,showError(){},configureModel(){configured=controls.model.value;},selectedModel(){return catalog.models.find(m=>m.provider==='openai'&&m.id===controls.model.value);},$:id=>controls[id],document:{createElement(){return {append(){}}}},Option:function(label,value){this.value=value;}});
+ vm.runInContext(source.slice(source.indexOf('function primaryDirection('),source.indexOf('function configureModel()')),ctx);
+ vm.runInContext("selectProvider(settings.get('openai'))",ctx);
+ assert.equal(direction.value,'general');assert.equal(configured,'gpt-6.1-sol');assert.equal(settings.get('openai'),'gpt-6.1-sol');
+});
+test('batch has no user-facing creation or recovery controls',()=>{
+ const html=fs.readFileSync(path.join(web,'index.html'),'utf8'),advanced=fs.readFileSync(path.join(web,'advanced.js'),'utf8');
+ assert.doesNotMatch(html,/Batch jobs|Asynchronous batch|id="batch(?:Panel|Inputs|JobId|Jobs|Recovery)"|id="(?:submitBatch|loadBatches|recoverBatch|moreBatches)"/i);
+ assert.doesNotMatch(advanced,/batchCall|batchJobs|submitBatch|loadBatches|recoverBatch|batchPollCursor/);
+ assert.match(advanced,/function downloadJson\(/);
+});
+test('visible filters exclude batch and embedding models while preserving other categories',()=>{
  const catalog=JSON.parse(fs.readFileSync(path.join(web,'../resources/catalog.json'),'utf8'));const ctx=vm.createContext({catalog,t:x=>x});
  vm.runInContext(source.slice(source.indexOf('function primaryDirection('),source.indexOf('function selectProvider(')),ctx);
  assert(catalog.models.some(m=>m.categories.includes('embeddings')),'legacy backend remains supported');
  for(const direction of ['general','image','video','voice','more'])assert(!vm.runInContext(`directionModels('${direction}').some(m=>m.categories.includes('embeddings'))`,ctx));
- assert(vm.runInContext("directionModels('more').some(m=>m.batch)",ctx));
+ assert.equal(vm.runInContext("directionModels('more').length",ctx),0);for(const direction of ['general','image','video','voice'])assert(!vm.runInContext(`directionModels('${direction}').some(m=>m.batch)`,ctx));
  const html=fs.readFileSync(path.join(web,'index.html'),'utf8');assert(!/Batch &amp; vector tools/i.test(html));
  assert(source.includes("key!=='embeddings'&&used.has(key)"));
 });
 test('unsupported directions are hidden and enabled only when an integrated model exists',()=>{
  const catalog=JSON.parse(fs.readFileSync(path.join(web,'../resources/catalog.json'),'utf8'));
  function control(){const c={value:'general',options:['general','image','video','voice','more'].map(value=>({value}))};Object.defineProperty(c,'selectedOptions',{get(){return this.options.filter(x=>x.value===this.value)}});return c;}
- const controls={modelDirection:control(),libraryDirection:control()};const ctx=vm.createContext({catalog,t:x=>x,$:id=>controls[id]});
+ const controls={modelDirection:control(),libraryDirection:control(),provider:{value:''}};const ctx=vm.createContext({catalog,t:x=>x,$:id=>controls[id]});
  vm.runInContext(source.slice(source.indexOf('function primaryDirection('),source.indexOf('function selectProvider(')),ctx);
- vm.runInContext('updateAvailableDirections()',ctx);assert.equal(controls.libraryDirection.options.find(x=>x.value==='video').hidden,true);assert.equal(controls.libraryDirection.options.find(x=>x.value==='more').hidden,false);
+ vm.runInContext('updateAvailableDirections()',ctx);assert.equal(controls.libraryDirection.options.find(x=>x.value==='video').hidden,true);assert.equal(controls.libraryDirection.options.find(x=>x.value==='more').hidden,true);
  catalog.models.push({provider:'test',id:'video',categories:['video'],batch:false});vm.runInContext('updateAvailableDirections()',ctx);assert.equal(controls.libraryDirection.options.find(x=>x.value==='video').disabled,false);
+});
+test('provider changes hide empty directions and recover from a stale selection',()=>{
+ const catalog=JSON.parse(fs.readFileSync(path.join(web,'../resources/catalog.json'),'utf8'));
+ function control(value){const c={value,options:['general','image','video','voice','more'].map(value=>({value}))};Object.defineProperty(c,'selectedOptions',{get(){return this.options.filter(x=>x.value===this.value)}});return c;}
+ const controls={modelDirection:control('voice'),libraryDirection:control('general'),provider:{value:'anthropic'}};const ctx=vm.createContext({catalog,t:x=>x,$:id=>controls[id]});vm.runInContext(source.slice(source.indexOf('function primaryDirection('),source.indexOf('function selectProvider(')),ctx);
+ vm.runInContext('updateAvailableDirections()',ctx);assert.equal(controls.modelDirection.options.find(x=>x.value==='voice').hidden,true);assert.equal(controls.modelDirection.value,'general');assert.equal(controls.libraryDirection.options.find(x=>x.value==='voice').hidden,false);
+ controls.provider.value='openai';vm.runInContext('updateAvailableDirections()',ctx);assert.equal(controls.modelDirection.options.find(x=>x.value==='voice').hidden,false);
 });
 test('capability filter only offers populated non-embedding tasks for the selected direction',()=>{
  const catalog=JSON.parse(fs.readFileSync(path.join(web,'../resources/catalog.json'),'utf8'));

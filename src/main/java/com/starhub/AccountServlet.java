@@ -63,16 +63,52 @@ public final class AccountServlet extends HttpServlet {
             q.setLong(1,(Long)s.getAttribute(USER));try(ResultSet r=q.executeQuery()){return r.next()&&MessageDigest.isEqual((byte[])s.getAttribute("starhub.account.hash"),r.getBytes(1))&&Objects.equals(s.getAttribute(EMAIL),r.getString(2))&&Objects.equals(s.getAttribute("starhub.account.generation"),r.getString(3));}
         }catch(Exception e){throw StorageFailure.unavailable();}
     }
+    static boolean idleEnabled(Properties p){return "true".equals(p.getProperty("account.idle.enabled"));}
+    @FunctionalInterface private interface IdleWork<T>{T run(Connection c)throws Exception;}
+    private static <T>T idleTransaction(Properties p,IdleWork<T> work)throws Exception{
+        Connection borrowed=AtomicDatabase.borrowed(p);if(borrowed!=null)return work.run(borrowed);
+        try(Connection c=db(p)){c.setAutoCommit(false);try{T result=work.run(c);c.commit();return result;}catch(Exception failure){c.rollback();throw failure;}}
+    }
+    private static long idleRemaining(Properties p,HttpSession session)throws Exception{
+        if(!activeSession(session))return 0;
+        String nonce=(String)session.getAttribute(AccountIdleSessions.ATTRIBUTE),generation=(String)session.getAttribute("starhub.account.generation");long user=(Long)session.getAttribute(USER);
+        return idleTransaction(p,c->AccountIdleSessions.remaining(c,nonce,user,generation));
+    }
+    static boolean idleEntry(Connection c,HttpSession session)throws Exception{
+        return idleEntryRemaining(c,session)>0;
+    }
+    private static long idleEntryRemaining(Connection c,HttpSession session)throws Exception{
+        if(!activeSession(session))return 0;
+        String nonce=(String)session.getAttribute(AccountIdleSessions.ATTRIBUTE),generation=(String)session.getAttribute("starhub.account.generation");
+        return AccountIdleSessions.remaining(c,nonce,(Long)session.getAttribute(USER),generation);
+    }
+    static long providerIdle(FileStorage service,HttpSession session,boolean accountRequired)throws Exception{
+        if(!idleEnabled(service.config))return Long.MAX_VALUE;
+        if(session==null||!(session.getAttribute(USER) instanceof Long)){
+            if(accountRequired)throw new StorageFailure(401,"SESSION_ENDED","登录会话已结束，请重新登录原账户。");
+            return Long.MAX_VALUE;
+        }
+        long remaining=service.atomic.database.run(UUID.randomUUID().toString(),c->{service.atomic.transientCapacity(c,AccountIdleSessions.LOGIN_PHYSICAL_BOUND);return idleEntryRemaining(c,session);});
+        if(remaining<=0)throw new StorageFailure(401,"SESSION_ENDED","登录会话已结束，请重新登录原账户。");return remaining;
+    }
     static byte[] hash(String password,byte[] salt)throws GeneralSecurityException {KeySpec spec=new PBEKeySpec(password.toCharArray(),salt,600000,256);return SecretKeyFactory.getInstance("PBKDF2WithHmacSHA256").generateSecret(spec).getEncoded();}
     static byte[] crypt(boolean encrypt,byte[] input,byte[] key,byte[] iv,String aad)throws GeneralSecurityException {Cipher c=Cipher.getInstance("AES/GCM/NoPadding");c.init(encrypt?Cipher.ENCRYPT_MODE:Cipher.DECRYPT_MODE,new SecretKeySpec(key,"AES"),new GCMParameterSpec(128,iv));c.updateAAD(aad.getBytes(StandardCharsets.UTF_8));return c.doFinal(input);}
     private void respond(HttpServletResponse r,int status,Object value)throws IOException {r.setStatus(status);r.setContentType("application/json;charset=UTF-8");r.setHeader("Cache-Control","no-store");ModelGateway.JSON.writeValue(r.getOutputStream(),value);}
     private void fail(HttpServletResponse r,int status,String text)throws IOException {respond(r,status,ModelGateway.JSON.createObjectNode().put("error",text));}
     private void unavailable(HttpServletResponse res)throws IOException{respond(res,503,ModelGateway.JSON.createObjectNode().put("error","服务器故障，请等待恢复").put("code","CLUSTER_UNAVAILABLE"));}
     protected void doGet(HttpServletRequest req,HttpServletResponse res)throws IOException {
+        if(req.getParameter("sessionStatus")!=null){
+            try{Properties p=config();HttpSession s=req.getSession(false);if(!idleEnabled(p)){fail(res,404,"此查询当前不可用。");return;}
+                long remaining=idleRemaining(p,s);ObjectNode out=ModelGateway.JSON.createObjectNode().put("signedIn",remaining>0);
+                if(remaining>0)out.put("email",(String)s.getAttribute(EMAIL)).put("remainingMs",remaining);respond(res,200,out);
+            }catch(StorageFailure e){respond(res,e.status,ModelGateway.JSON.createObjectNode().put("code",e.code).put("error",e.getMessage()));}
+            catch(Exception e){unavailable(res);}return;
+        }
         HttpSession session=req.getSession(false);if(!activeSession(session)){respond(res,200,ModelGateway.JSON.createObjectNode().put("signedIn",false));return;}
         try {Properties p=config();long id=(Long)session.getAttribute(USER);ObjectNode out=ModelGateway.JSON.createObjectNode().put("signedIn",true).put("email",(String)session.getAttribute(EMAIL));ObjectNode keys=out.putObject("keys");
             ArrayNode ring=out.putArray("keyRing");byte[] vault=Base64.getDecoder().decode(p.getProperty("vault.key"));
-            try(Connection c=db(p)){c.setAutoCommit(false);try{Keyring.migrate(c,vault,id);c.commit();}catch(Exception e){c.rollback();throw e;}finally{c.setAutoCommit(true);}try(PreparedStatement q=c.prepareStatement("SELECT id,provider,label,nonce,ciphertext,selected FROM api_keys WHERE user_id=? ORDER BY created_at,id")){q.setLong(1,id);try(ResultSet r=q.executeQuery()){while(r.next()){String keyId=r.getString(1),provider=r.getString(2);boolean selected=r.getBoolean(6);ring.addObject().put("id",keyId).put("provider",provider).put("label",r.getString(3)).put("selected",selected);if(selected)keys.put(provider,Keyring.decrypt(id,provider,keyId,r.getBytes(4),r.getBytes(5),vault));}}}
+            try(Connection c=db(p)){try(PreparedStatement q=c.prepareStatement("SELECT display_name FROM users WHERE id=? AND generation=? AND active=1")){q.setLong(1,id);q.setString(2,(String)session.getAttribute("starhub.account.generation"));try(ResultSet r=q.executeQuery()){if(!r.next())throw new SQLException("Account changed");String name=r.getString(1);if(name!=null&&!name.isBlank())out.put("displayName",name);}}
+                c.setAutoCommit(false);try{Keyring.migrate(c,vault,id);c.commit();}catch(Exception e){c.rollback();throw e;}finally{c.setAutoCommit(true);}try(PreparedStatement q=c.prepareStatement("SELECT id,provider,label,nonce,ciphertext,selected FROM api_keys WHERE user_id=? ORDER BY created_at,id")){q.setLong(1,id);try(ResultSet r=q.executeQuery()){while(r.next()){String keyId=r.getString(1),provider=r.getString(2);boolean selected=r.getBoolean(6);ring.addObject().put("id",keyId).put("provider",provider).put("label",r.getString(3)).put("selected",selected);if(selected)keys.put(provider,Keyring.decrypt(id,provider,keyId,r.getBytes(4),r.getBytes(5),vault));}}}
                 if("1".equals(req.getParameter("bootstrap"))){
                     // This bundle is meaningful only inside the existing certified request scope.
                     Connection borrowed=AtomicDatabase.borrowed(p);if(borrowed==null)throw StorageFailure.unavailable();
@@ -88,8 +124,19 @@ public final class AccountServlet extends HttpServlet {
         byte[] data=req.getInputStream().readNBytes(16385);if(data.length>16384){fail(res,413,"请求过大。");return;}
         JsonNode body;try{body=ModelGateway.JSON.readTree(data);}catch(Exception e){fail(res,400,"请求无效。");return;}if(body==null||!body.isObject()){fail(res,400,"请求无效。");return;}
         String action=body.path("action").asText();HttpSession session=req.getSession(false);
-        if(action.equals("logout")){if(session!=null&&session.getAttribute(USER)!=null&&!Objects.equals(session.getAttribute(EMAIL),body.path("expectedEmail").asText())){fail(res,409,"账户已在另一个标签页更改，请刷新后重试。");return;}if(session!=null){session.removeAttribute(USER);session.removeAttribute(EMAIL);req.changeSessionId();}respond(res,200,ModelGateway.JSON.createObjectNode().put("ok",true));return;}
+        if(action.equals("logout")){if(session!=null&&session.getAttribute(USER)!=null&&!Objects.equals(session.getAttribute(EMAIL),body.path("expectedEmail").asText())){fail(res,409,"账户已在另一个标签页更改，请刷新后重试。");return;}
+            try{Properties p=config();if(idleEnabled(p)&&session!=null&&session.getAttribute(USER) instanceof Long user){String nonce=(String)session.getAttribute(AccountIdleSessions.ATTRIBUTE),generation=(String)session.getAttribute("starhub.account.generation");idleTransaction(p,c->{AccountIdleSessions.revoke(c,nonce,user,generation);return null;});}}
+            catch(StorageFailure e){respond(res,e.status,ModelGateway.JSON.createObjectNode().put("code",e.code).put("error",e.getMessage()));return;}catch(Exception e){unavailable(res);return;}
+            if(session!=null){session.removeAttribute(USER);session.removeAttribute(EMAIL);session.removeAttribute(AccountIdleSessions.ATTRIBUTE);req.changeSessionId();}respond(res,200,ModelGateway.JSON.createObjectNode().put("ok",true));return;}
         try {Properties p=config();
+            if(action.equals("userActivity")&&idleEnabled(p)){
+                if(!activeSession(session)){respond(res,200,ModelGateway.JSON.createObjectNode().put("signedIn",false));return;}
+                if(!Objects.equals(session.getAttribute(EMAIL),body.path("expectedEmail").asText())){fail(res,409,"账户已在另一个标签页更改，请刷新后重试。");return;}
+                JsonNode age=body.path("activityAgeMs");if(!age.isIntegralNumber()||!age.canConvertToInt()||age.intValue()<0||age.intValue()>AccountIdleSessions.MAX_ACTIVITY_AGE_MILLIS){fail(res,400,"活动时间无效。");return;}
+                String nonce=(String)session.getAttribute(AccountIdleSessions.ATTRIBUTE),generation=(String)session.getAttribute("starhub.account.generation");long user=(Long)session.getAttribute(USER);
+                long remaining=nonce==null?0:idleTransaction(p,c->AccountIdleSessions.touch(c,nonce,user,generation,age.intValue()));
+                ObjectNode out=ModelGateway.JSON.createObjectNode().put("signedIn",remaining>0);if(remaining>0)out.put("email",(String)session.getAttribute(EMAIL)).put("remainingMs",remaining);respond(res,200,out);return;
+            }
             if(action.equals("loginStatus")){
                 if(!"true".equals(p.getProperty("storage.replicated"))||!"atomic".equals(p.getProperty("storage.transactionMode"))){fail(res,400,"此查询当前不可用。");return;}
                 String ip=req.getHeader("X-Real-IP");if(ip==null)ip=req.getRemoteAddr();
@@ -105,8 +152,14 @@ public final class AccountServlet extends HttpServlet {
                 if(email.length()>254||password.length()>256){if(atomic)AtomicLoginThrottle.complete(p,attempt,false);fail(res,401,"邮箱或密码不正确。");return;}
                 byte[] salt=new byte[16],expectedHash=new byte[32];long id=0;String generation=null;try(Connection c=db(p);PreparedStatement q=c.prepareStatement("SELECT id, password_salt, password_hash,generation FROM users WHERE email=? AND active=1")){q.setString(1,email);try(ResultSet r=q.executeQuery()){if(r.next()){id=r.getLong(1);salt=r.getBytes(2);expectedHash=r.getBytes(3);generation=r.getString(4);}}}
                 if(!MessageDigest.isEqual(hash(password,salt),expectedHash)||id==0){if(atomic)AtomicLoginThrottle.complete(p,attempt,false);fail(res,401,"邮箱或密码不正确。");return;}
+                if(idleEnabled(p)){
+                    if(!atomic)throw new SQLException("Idle account sessions require the durable login protocol");
+                    final long accountId=id;final String accountGeneration=generation;
+                    long remaining=idleTransaction(p,c->AccountIdleSessions.createOrRecover(c,attempt.operation(),accountId,accountGeneration,attempt.fresh()));
+                    if(remaining==0){respond(res,200,ModelGateway.JSON.createObjectNode().put("ok",false).put("code","SESSION_ENDED"));return;}
+                }
                 if(atomic)AtomicLoginThrottle.complete(p,attempt,true);else FAILURES.remove(address);
-                session=req.getSession(true);req.changeSessionId();session.setAttribute(USER,id);session.setAttribute(EMAIL,email);session.setAttribute("starhub.account.hash",expectedHash);session.setAttribute("starhub.account.generation",generation);session.setMaxInactiveInterval(SESSION_SECONDS);respond(res,200,ModelGateway.JSON.createObjectNode().put("ok",true));return;
+                session=req.getSession(true);req.changeSessionId();session.setAttribute(USER,id);session.setAttribute(EMAIL,email);session.setAttribute("starhub.account.hash",expectedHash);session.setAttribute("starhub.account.generation",generation);if(idleEnabled(p))session.setAttribute(AccountIdleSessions.ATTRIBUTE,attempt.operation());session.setMaxInactiveInterval(SESSION_SECONDS);respond(res,200,ModelGateway.JSON.createObjectNode().put("ok",true));return;
             }
             if(!activeSession(session)){fail(res,401,"请先登录。");return;}
             if(!Objects.equals(session.getAttribute(EMAIL),body.path("expectedEmail").asText())){fail(res,409,"账户已在另一个标签页更改，请刷新后重试。");return;}
@@ -135,6 +188,7 @@ public final class AccountServlet extends HttpServlet {
             }
             if(action.equals("saveKey")){fail(res,409,"密钥管理已更新，请刷新页面。");return;}
             fail(res,400,"操作无效。");
-        }catch(Exception e){getServletContext().log("Star Hub account backend failure: "+e.getClass().getSimpleName()+(e instanceof SQLException?" SQLState="+((SQLException)e).getSQLState():""));unavailable(res);}
+        }catch(StorageFailure e){respond(res,e.status,ModelGateway.JSON.createObjectNode().put("code",e.code).put("error",e.getMessage()));}
+        catch(Exception e){getServletContext().log("Star Hub account backend failure: "+e.getClass().getSimpleName()+(e instanceof SQLException?" SQLState="+((SQLException)e).getSQLState():""));unavailable(res);}
     }
 }

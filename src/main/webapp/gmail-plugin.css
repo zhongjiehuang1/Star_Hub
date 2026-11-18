@@ -1,0 +1,20 @@
+.gmail-plugin{display:grid;gap:10px;max-width:760px;color:inherit}
+.gmail-plugin h2,.gmail-plugin h3,.gmail-plugin p{margin:0}
+.gmail-plugin form{display:flex;gap:8px;flex-wrap:wrap}
+.gmail-plugin input{flex:1;min-width:min(100%,220px)}
+.gmail-plugin button{width:fit-content}
+.gmail-plugin .gmail-results{display:grid;gap:8px}
+.gmail-plugin .gmail-result,.gmail-plugin .gmail-message:not(:empty){padding:12px;border:1px solid #e0dbea;border-radius:10px;background:#faf9fd}
+.gmail-plugin .gmail-result p,.gmail-plugin .gmail-message p{margin:6px 0;color:#665e74;font-size:.9rem}
+.gmail-plugin .gmail-message pre{white-space:pre-wrap;overflow-wrap:anywhere;max-height:360px;overflow:auto;font:inherit}
+.gmail-plugin .gmail-status:empty{display:none}
+
+#gmailDialog { width:min(780px,calc(100vw - 32px)); max-height:min(85vh,860px); overflow:auto; padding:24px; }
+#gmailDialog .detail-header { margin-bottom:18px; }
+#gmailDialogTitle { margin:0; }
+.gmail-plugin h2[hidden] { display:none; }
+.gmail-plugin button { border:1px solid #ded8eb; border-radius:10px; background:#f5f2fc; color:#5c4b90; padding:8px 12px; font:inherit; cursor:pointer; }
+.gmail-plugin button:hover { background:#eae4f8; }
+.gmail-plugin button[hidden], .gmail-plugin form[hidden] { display:none; }
+.gmail-plugin input { padding:9px 12px; border:1px solid #dcd9e5; border-radius:10px; font:inherit; }
+.gmail-plugin a { color:#6550aa; }

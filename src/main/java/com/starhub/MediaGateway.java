@@ -1,5 +1,7 @@
 package com.starhub;
 
+import com.fasterxml.jackson.core.JsonParser;
+import com.fasterxml.jackson.core.JsonToken;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.node.*;
 import java.io.*;
@@ -30,7 +32,14 @@ final class MediaGateway {
         String type="application/json",url=ApiRoutes.media(m,task,r.path("jobId").asText());byte[] bytes;
         switch(task){
             case "image":
-                if(!r.path("file").asText().isEmpty()||r.path("files").size()>0)throw bad("当前官方图像生成接入仅支持文字输入。");
+                if(r.has("imageEdit")&&!r.path("imageEdit").isBoolean())throw bad("图片编辑请求格式无效。");
+                if(r.path("imageEdit").asBoolean()){
+                    if(params.path("n").asInt(1)!=1)throw bad("图片编辑每次只能生成一张图片。");
+                    if(r.path("files").size()>0)throw bad("图片编辑只支持一张参考图片。");
+                    String image=validatedFile(r,true);
+                    body.putArray("images").addObject().put("image_url",image);
+                    url=ApiRoutes.imageEdit();
+                }else if(!r.path("file").asText().isEmpty()||r.path("files").size()>0)throw bad("图片生成不接受参考图片，请使用图片编辑。");
                 body.put("prompt",prompt);break;
             case "speech":
                 String voice=r.path("voice").asText(xaiSpeech?"eve":"coral");if(!Catalog.contains(m.path("voices"),voice))throw bad("请选择官方支持的声音。");
@@ -100,6 +109,24 @@ final class MediaGateway {
         if(url.startsWith("https://")||url.startsWith("data:image/")||url.startsWith("data:audio/")||url.startsWith("data:video/"))media.addObject().put("type",type).put("url",url);
     }
     private static ModelGateway.Problem bad(String message){return new ModelGateway.Problem(400,message);}
+    // An edit body can contain a multi-megabyte data URL. Read only the small
+    // validated response settings rather than materializing another image tree
+    // while the bounded image response is being decoded.
+    static ObjectNode imageResponseOptions(byte[] body)throws IOException{
+        ObjectNode options=ModelGateway.JSON.createObjectNode().put("n",1).put("output_format","png");
+        try(JsonParser parser=ModelGateway.JSON.getFactory().createParser(body)){
+            if(parser.nextToken()!=JsonToken.START_OBJECT)throw new IOException("Invalid image request");
+            while(parser.nextToken()!=JsonToken.END_OBJECT){
+                if(parser.currentToken()!=JsonToken.FIELD_NAME)throw new IOException("Invalid image request");
+                String field=parser.currentName();JsonToken token=parser.nextToken();
+                if(token==null)throw new IOException("Invalid image request");
+                if(field.equals("n")&&token.isNumeric())options.put("n",parser.getIntValue());
+                else if(field.equals("output_format")&&token==JsonToken.VALUE_STRING)options.put("output_format",parser.getText());
+                else parser.skipChildren();
+            }
+            if(parser.nextToken()!=null)throw new IOException("Invalid image request");
+        }return options;
+    }
     static Response https(String method,String url,String key,String type,byte[] body)throws IOException{
         ApiRoutes.requireOfficial(URI.create(url));ProviderOperations.beforeExternal();
         if(method.equals("GET")){var reply=ProviderTransportPolicy.get(URI.create(url),Map.of("Authorization","Bearer "+key,"Content-Type",type),90,16*1024*1024);return new Response(reply.status(),reply.contentType(),reply.bytes());}
@@ -114,9 +141,9 @@ final class MediaGateway {
                 }
             }
             try(InputStream in=c.getInputStream()){
-                if(method.equals("POST")&&url.equals("https://api.openai.com/v1/images/generations")){
-                    JsonNode request=ModelGateway.JSON.readTree(body);String format=request.path("output_format").asText("png"),mime="image/"+(format.equals("jpeg")?"jpeg":format);
-                    return new Response(status,Objects.toString(c.getContentType(),"application/json"),StreamingMediaResponse.images(in,request.path("n").asInt(1),mime));
+                if(method.equals("POST")&&(url.equals("https://api.openai.com/v1/images/generations")||url.equals(ApiRoutes.imageEdit()))){
+                    JsonNode options=imageResponseOptions(body);String format=options.path("output_format").asText("png"),mime="image/"+(format.equals("jpeg")?"jpeg":format);
+                    return new Response(status,Objects.toString(c.getContentType(),"application/json"),StreamingMediaResponse.images(in,options.path("n").asInt(1),mime));
                 }
                 byte[] bytes=in.readNBytes(16*1024*1024+1);if(bytes.length>16*1024*1024)throw new ModelGateway.Problem(502,"媒体响应超过 16 MB，请在平台查看结果。");
                 return new Response(status,Objects.toString(c.getContentType(),"application/json"),bytes);

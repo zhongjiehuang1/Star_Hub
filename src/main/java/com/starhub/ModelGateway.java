@@ -202,6 +202,29 @@ final class ModelGateway {
         checkStatus(prepared.provider,reply.status);
         return decode(prepared,reply.body);
     }
+    /** Only the already-dispatched realtime search tool uses mandatory search and full sources. */
+    ObjectNode chatForRealtimeSearch(JsonNode request) throws IOException {
+        if(!request.path("provider").asText().equals("openai") || !request.path("model").asText().equals("gpt-6.1-sol") || !request.path("webSearch").asBoolean(false))throw new IllegalArgumentException("Invalid realtime search request");
+        Prepared prepared=prepare(request,false);
+        if(!prepared.responses)throw new IllegalArgumentException("Realtime search requires Responses");
+        prepared.body.put("tool_choice","required");
+        prepared.body.putArray("include").add("web_search_call.action.sources");
+        Reply reply=transport.send(prepared.uri,prepared.headers,JSON.writeValueAsBytes(prepared.body));
+        checkStatus(prepared.provider,reply.status);
+        ObjectNode result=decode(prepared,reply.body);JsonNode provider=JSON.readTree(reply.body);
+        ObjectNode details=(ObjectNode)result.path("details");details.remove("webCitations");details.put("webSearchUsed",false);
+        boolean completed=false,weather=false;
+        for(JsonNode item:provider.path("output")){
+            if(!item.path("type").asText().equals("web_search_call") || !item.path("status").asText().equals("completed") || !Set.of("search","open_page","find_in_page").contains(item.path("action").path("type").asText()))continue;
+            completed=true;SearchMetadata.responses(item,details);
+            for(JsonNode source:item.path("action").path("sources"))if(source.isObject() && source.path("type").asText().equals("api") && source.path("name").asText().equals("oai-weather"))weather=true;
+        }
+        if(completed){
+            for(JsonNode item:provider.path("output"))if(item.path("type").asText().equals("message"))for(JsonNode part:item.path("content"))for(JsonNode citation:part.path("annotations"))if(citation.path("type").asText().equals("url_citation"))details.withArray("webCitations").add(citation);
+            if(weather)details.put("realtimeSource","oai-weather");
+        }
+        return result;
+    }
     static void checkStatus(Provider p,int status){
         if(status>=200 && status<300)return;
         String reason;

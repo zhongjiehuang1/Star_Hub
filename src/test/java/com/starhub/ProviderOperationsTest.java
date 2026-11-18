@@ -29,6 +29,50 @@ class ProviderOperationsTest {
         ProviderOperations.Ticket ticket(String id,ObjectNode request)throws Exception{assertEquals("CLAIMED",operations.claim(owner,id,"test:generate",request).state());return operations.dispatch(owner,id,"test:generate",request);}
         public void close(){f.close();}
     }
+    @Test void semanticMemoryResultIsBoundToTheExactProviderRequestAndCannotRestoreAfterDisable()throws Exception{
+        try(Harness h=new Harness()){
+            try(Connection c=h.f.connection();Statement s=c.createStatement()){
+                String ddl=Files.readString(Path.of("deploy/migrations/018_account_memory.sql")).replaceAll("(?m)^--.*$","").replace("ENGINE=InnoDB","");
+                for(String sql:ddl.split(";"))if(!sql.isBlank())s.execute(sql);
+                c.setAutoCommit(false);AccountMemories.setEnabled(c,1,h.f.generation,0,true);c.commit();
+            }
+            String id=UUID.randomUUID().toString(),kind="/memory-extract::chat";ObjectNode input=h.input(id).put("text","我喜欢徒步旅行").put("memoryRevision",1);
+            h.operations.claim(h.owner,id,kind,input);var ticket=h.operations.dispatch(h.owner,id,kind,input);try(var context=ticket.enter()){ProviderOperations.beforeExternal();}
+            ticket.complete(200,ModelGateway.JSON.createObjectNode().put("text","{\"kind\":\"PREFERENCE\",\"quote\":\"我喜欢徒步旅行\"}"));
+            h.f.db.run(UUID.randomUUID().toString(),c->{
+                var result=h.operations.completedBound(c,h.owner,id,kind,input);
+                assertThrows(StorageFailure.class,()->h.operations.completedBound(c,h.owner,id,kind,input.deepCopy().put("text","我喜欢游泳")));
+                AccountMemories.saveSemantic(c,1,h.f.generation,1,input.path("text").asText(),result.result().path("text").asText(),new byte[32]);return null;
+            });
+            h.f.db.run(UUID.randomUUID().toString(),c->{
+                assertEquals(1,AccountMemories.state(c,1,h.f.generation,new byte[32]).path("memories").size());
+                AccountMemories.setEnabled(c,1,h.f.generation,2,false);return null;
+            });
+            h.f.db.run(UUID.randomUUID().toString(),c->{
+                var result=h.operations.completedBound(c,h.owner,id,kind,input);
+                assertThrows(StorageFailure.class,()->AccountMemories.saveSemantic(c,1,h.f.generation,1,input.path("text").asText(),result.result().path("text").asText(),new byte[32]));
+                assertTrue(AccountMemories.promptSnapshot(c,1,h.f.generation,new byte[32]).path("memories").isEmpty());return null;
+            });
+        }
+    }
+    @Test void realtimeTicketVerifiesOriginalSessionAccountGenerationAndDispatch()throws Exception {
+        try(Harness h=new Harness()){
+            var attrs=new HashMap<String,Object>();attrs.put("starhub.account.id",1L);attrs.put("starhub.account.email","user@example.test");attrs.put("starhub.account.generation",h.f.generation);attrs.put("starhub.account.hash",h.f.accountHash);
+            var session=org.mockito.Mockito.mock(jakarta.servlet.http.HttpSession.class);org.mockito.Mockito.when(session.getAttribute(org.mockito.ArgumentMatchers.anyString())).thenAnswer(i->attrs.get(i.getArgument(0)));
+            String id=UUID.randomUUID().toString();var input=h.input(id).put("ownerTab","a".repeat(32)).put("expectedEmail","user@example.test");var owner=ProviderIdentity.from(session,input,null);
+            h.operations.claim(owner,id,"realtime:live-session",input);var ticket=h.operations.dispatch(owner,id,"realtime:live-session",input);ticket.verifyOwnerAndAuthority();
+            attrs.remove("starhub.account.id");assertThrows(StorageFailure.class,ticket::verifyOwnerAndAuthority);attrs.put("starhub.account.id",1L);
+            attrs.put("starhub.account.generation",UUID.randomUUID().toString());assertThrows(StorageFailure.class,ticket::verifyOwnerAndAuthority);attrs.put("starhub.account.generation",h.f.generation);
+            try(Connection c=h.f.connection();PreparedStatement q=c.prepareStatement("UPDATE users SET generation=? WHERE id=1")){q.setString(1,UUID.randomUUID().toString());q.executeUpdate();}
+            assertThrows(StorageFailure.class,ticket::verifyOwnerAndAuthority);
+            try(Connection c=h.f.connection();PreparedStatement q=c.prepareStatement("UPDATE users SET generation=? WHERE id=1")){q.setString(1,h.f.generation);q.executeUpdate();}
+            ticket.verifyOwnerAndAuthority();try(Connection c=h.f.connection();PreparedStatement q=c.prepareStatement("UPDATE starhub_provider_operations SET state='UNKNOWN' WHERE operation_id=?")){q.setString(1,id);q.executeUpdate();}
+            assertThrows(StorageFailure.class,ticket::verifyOwnerAndAuthority);
+            try(Connection c=h.f.connection();PreparedStatement q=c.prepareStatement("UPDATE starhub_provider_operations SET state='SENT' WHERE operation_id=?")){q.setString(1,id);q.executeUpdate();}
+            ticket.verifyOwnerAndAuthority();try(Connection c=h.f.connection();PreparedStatement q=c.prepareStatement("UPDATE starhub_provider_operations SET dispatch_hash=? WHERE operation_id=?")){q.setBytes(1,new byte[32]);q.setString(2,id);q.executeUpdate();}
+            assertThrows(StorageFailure.class,ticket::verifyOwnerAndAuthority);
+        }
+    }
     @Test void unknownClaimAcknowledgementCanResumeTheOriginalIdAndCompleteOnce()throws Exception {
         try(Harness h=new Harness()){
             String id=UUID.randomUUID().toString();ObjectNode input=h.input(id);h.f.loseCommit.set(true);assertThrows(SQLException.class,()->h.operations.claim(h.owner,id,"test:generate",input));
@@ -42,6 +86,16 @@ class ProviderOperationsTest {
             String id=UUID.randomUUID().toString();ObjectNode request=h.input(id);h.operations.claim(h.owner,id,"test:generate",request);h.f.loseCommit.set(true);
             assertThrows(SQLException.class,()->h.operations.dispatch(h.owner,id,"test:generate",request));assertEquals("SENT",h.other().status(h.owner,id).state());
             assertEquals("SENT",h.other().claim(h.owner,id,"test:generate",request).state());assertEquals("PROVIDER_OPERATION_UNKNOWN",assertThrows(StorageFailure.class,()->h.other().dispatch(h.owner,id,"test:generate",request)).code);assertTrue(h.f.count("SELECT SUM(reserved_bytes) FROM starhub_capacity_totals")>0);
+        }
+    }
+    @Test void imageEditReceiptBindsSourceBytesAndCannotRedispatchAfterSent()throws Exception {
+        try(Harness h=new Harness()){
+            String id=UUID.randomUUID().toString(),kind="/run::image";ObjectNode input=h.input(id).put("task","image").put("imageEdit",true).put("file","data:image/png;base64,AQID");
+            assertEquals("CLAIMED",h.operations.claim(h.owner,id,kind,input).state());
+            var ticket=h.operations.dispatch(h.owner,id,kind,input);try(var context=ticket.enter()){ProviderOperations.beforeExternal();}
+            assertEquals("SENT",h.other().claim(h.owner,id,kind,input.deepCopy()).state());
+            assertEquals("PROVIDER_OPERATION_CONFLICT",assertThrows(StorageFailure.class,()->h.other().claim(h.owner,id,kind,input.deepCopy().put("file","data:image/png;base64,AQIE"))).code);
+            assertEquals("PROVIDER_OPERATION_UNKNOWN",assertThrows(StorageFailure.class,()->h.other().dispatch(h.owner,id,kind,input)).code);
         }
     }
     @Test void fullyStagedResultAfterLostSealReplyIsRecoveredAcrossInstancesWithoutRepeatingTheEffect()throws Exception {

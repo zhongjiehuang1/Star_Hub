@@ -175,3 +175,4 @@ button:active:not(:disabled){transform:translateY(1px)}
 
 /* Advanced library controls stay available without crowding the default view. */
 #libraryMoreFilters{margin:10px 0}#libraryMoreFilters summary{cursor:pointer;font-size:13px;font-weight:600;padding:8px 0}.more-filter-fields{display:flex;flex-direction:column;gap:7px;padding-top:8px}
+.session-notice:not([hidden]){position:fixed;z-index:10000;top:1rem;left:50%;transform:translateX(-50%);padding:.65rem 1rem;border:1px solid #ded8ed;border-radius:.7rem;background:#fff;color:#39334a;box-shadow:0 .4rem 1.5rem #30294c26;max-width:calc(100vw - 2rem);text-align:center}

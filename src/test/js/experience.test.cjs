@@ -8,8 +8,31 @@ function fixture(saved={},shared={}){
  const context=vm.createContext({window:{localStorage,sessionStorage,dispatchEvent(){}},document:{addEventListener(){}},structuredClone,atob,btoa,fetch,crypto:require('node:crypto').webcrypto,setTimeout,clearTimeout,CustomEvent:class{}});
  for(const f of ['storage.js','i18n-data.js','i18n.js'])vm.runInContext(fs.readFileSync(path.join(root,f),'utf8'),context);return {data,session,server,run:s=>vm.runInContext(s,context),fail:()=>fail=true};
 }
+test('guest chat deletion survives a session reload after confirmed storage',async()=>{
+ const f=fixture();await f.run('StarStore.initGuest()');
+ f.run("globalThis.chats=[{id:'delete-me',title:'Delete',messages:[{role:'user',content:'old'}],draft:''},{id:'keep-me',title:'Keep',messages:[{role:'user',content:'keep'}],draft:''}];globalThis.current=chats[0];StarStore.saveHistory(chats,current.id)");await f.run('StarStore.flushConfirmed()');
+ f.run("window.confirm=()=>true;globalThis.accountEmail='';globalThis.accountIdentityRevision=1;globalThis.busy=false;globalThis.realtimeActive=false;globalThis.historySaveTimer=0;globalThis.$=()=>({value:''});globalThis.setBusy=value=>busy=value;globalThis.invalidateGeneratedPreviews=()=>{};globalThis.releaseGeneratedPreview=()=>{};globalThis.activateChat=c=>current=c;globalThis.render=()=>{};globalThis.showError=()=>{};globalThis.scheduleHistorySave=()=>StarStore.saveHistory(chats,current?.id)");
+ const app=fs.readFileSync(path.join(root,'app.js'),'utf8'),start=app.indexOf('async function deleteChat(chat) {'),end=app.indexOf('function updateConnection()',start);assert(start>=0&&end>start);f.run(app.slice(start,end));await f.run('deleteChat(chats[0])');await f.run('StarStore.flushConfirmed()');
+ const reload=fixture({}, {data:f.data,session:f.session,server:f.server});await reload.run('StarStore.initGuest()');assert.deepEqual(JSON.parse(reload.run('JSON.stringify(StarStore.loadHistory().chats.map(c=>c.id))')),['keep-me']);
+});
+test('live weather source persists only for the recognized source',async()=>{
+ const f=fixture();await f.run('StarStore.initGuest()');
+ f.run("StarStore.saveHistory([{id:'weather',title:'Weather',messages:[{role:'assistant',content:'Rain',details:{webSearchUsed:true,webCitations:[],realtimeSource:'oai-weather'}},{role:'assistant',content:'Other',details:{webSearchUsed:true,webCitations:[],realtimeSource:'untrusted'}}]}],'weather')");await f.run('StarStore.flush()');
+ const reload=fixture({}, {data:f.data,session:f.session,server:f.server});await reload.run('StarStore.initGuest()');assert.equal(reload.run('StarStore.loadHistory().chats[0].messages[0].details.realtimeSource'),'oai-weather');assert.equal(reload.run('StarStore.loadHistory().chats[0].messages[1].details.realtimeSource'),undefined);
+});
 test('model selection remembers each provider without credentials',()=>{const f=fixture();f.run("StarStore.saveSelection('deepseek',new Map([['openai','gpt-4.1-mini'],['deepseek','deepseek-flash']]))");assert.equal(f.run('StarStore.selection().provider'),'deepseek');assert.equal(f.run('StarStore.selection().models.openai'),'gpt-4.1-mini');assert.deepEqual(Object.keys(JSON.parse(f.data.get('starhub.v1.selection'))),['provider','models']);});
 test('English is default; explicit Chinese choice survives a reload',()=>{const f=fixture();assert.equal(f.run('language'),'en');assert.equal(f.run("t('下一步')"),'Next');assert.equal(f.run("t('已设置 {0} 项',3)"),'3 settings customized');assert.equal(f.run("uiText('找到 60 个接入项')"),'60 integrations found');const zh=fixture({'starhub.v1.language':'"zh"'});assert.equal(zh.run("uiText('Next')"),'下一步');assert.equal(zh.run("uiText('3 settings customized')"),'已设置 3 项');});
+test('model directory statistics contain no batch label in either language',()=>{
+ const en=fixture(),zh=fixture({'starhub.v1.language':'"zh"'});
+ assert.equal(en.run("t('{0} 家服务商 · {1} 个创作方向',7,4)"),'7 providers · 4 directions');
+ assert.equal(zh.run("t('{0} 家服务商 · {1} 个创作方向',7,4)"),'7 家服务商 · 4 个创作方向');
+});
+test('unconfirmed request navigation is clear in both interface languages',()=>{
+ const en=fixture(),zh=fixture({'starhub.v1.language':'"zh"'});
+ assert.match(en.run("t('请在侧栏的服务设置 → 请求记录中查看原请求。')"),/Service settings → Request history/);
+ assert.match(zh.run("t('请在侧栏的服务设置 → 请求记录中查看原请求。')"),/服务设置 → 请求记录/);
+ assert.match(zh.run("uiText('An earlier request is unconfirmed. Check it, or explicitly allow a separate request that may incur another charge.')"),/先前请求尚未确认/);
+});
 test('English catalog is complete and preserves API identities and Chinese originals',()=>{const f=fixture(),raw=JSON.parse(fs.readFileSync(path.join(root,'../resources/catalog.json'),'utf8'));f.run('raw='+JSON.stringify(raw));f.run('localized=localizedCatalog(raw)');const local=JSON.parse(f.run('JSON.stringify(localized)'));for(let i=0;i<raw.models.length;i++){const m=local.models[i];assert.equal(m.id,raw.models[i].id);assert.ok(m.description.length>30);for(const key of ['name','vendorName','family','providerName','description','executionNote','workbenchNote','keyLabel','accessLabel'])assert.ok(!/[\u3400-\u9fff]/.test(m[key]||''),`${m.id}: ${key}`);for(const specs of Object.values(m.settings||{}))for(const spec of specs)for(const key of ['label','help'])assert.ok(!/[\u3400-\u9fff]/.test(spec[key]||''),`${m.id}: ${spec.key} ${key}`);}assert.equal(f.run('raw.models[0].description'),raw.models[0].description);});
 
 
@@ -72,6 +95,21 @@ test('failed real pending retains its transaction for same-ID recovery rather th
 test('hydration failure blocks settlement and provider confirmation without silently retrying',async()=>{
  const f=fixture();f.run("globalThis.guestGets=0;fetch=async()=>{guestGets++;throw Error('synthetic hydration failure')}");assert.equal(await f.run('StarStore.initGuest()'),false);await assert.rejects(f.run('StarStore.whenHydrated()'),/hydration/);await assert.rejects(f.run('StarStore.whenSettled()'),/hydration/);await assert.rejects(f.run('StarStore.flushConfirmed()'),/hydration/);assert.equal(f.run('guestGets'),1);
 });
+test('guest hydration retries only an explicitly busy read with its original tab and bounded delay',async()=>{
+ const f=fixture();f.run(`const originalBusyFetch=fetch;globalThis.busyReads=[];globalThis.busyWaits=[];setTimeout=(fn,ms)=>{busyWaits.push(ms);fn();return 1};let busy=2;
+ fetch=async(u,o)=>{const request=JSON.parse(o.body);busyReads.push(request);if(request.action==='get'&&busy-->0)return {ok:false,status:429,headers:{get:name=>name==='Retry-After'?'1':null},json:async()=>({code:'MEMORY_BUSY'})};return originalBusyFetch(u,o)};`);
+ assert.equal(await f.run('StarStore.initGuest()'),true);const reads=JSON.parse(f.run('JSON.stringify(busyReads)'));assert.equal(reads.length,3);assert.ok(reads.every(read=>read.action==='get'&&read.tab===reads[0].tab&&read.after===reads[0].after));assert.deepEqual(JSON.parse(f.run('JSON.stringify(busyWaits)')),[1000,1000]);
+});
+test('guest hydration does not retry unrelated or unbounded errors',async()=>{
+ for(const [status,code,retry] of [[429,'MEMORY_BUSY','4'],[429,'OTHER','1'],[503,'MEMORY_BUSY','1'],[429,'MEMORY_BUSY',null]]){
+  const f=fixture();f.run(`globalThis.attempts=0;fetch=async()=>{attempts++;return {ok:false,status:${status},headers:{get:()=>${JSON.stringify(retry)}},json:async()=>({code:${JSON.stringify(code)}})}}`);
+  assert.equal(await f.run('StarStore.initGuest()'),false);assert.equal(f.run('attempts'),1);
+ }
+});
+test('guest busy-read retries stop after three attempts',async()=>{
+ const f=fixture();f.run(`globalThis.attempts=0;setTimeout=(fn)=>{fn();return 1};fetch=async()=>{attempts++;return {ok:false,status:429,headers:{get:()=>'1'},json:async()=>({code:'MEMORY_BUSY'})}}`);
+ assert.equal(await f.run('StarStore.initGuest()'),false);assert.equal(f.run('attempts'),3);
+});
 test('model selection preserves explicit choices by provider and direction without saving keys',()=>{
  const f=fixture();f.run("StarStore.saveSelection('openai',new Map([['openai','gpt-6-astra']]),new Map([['openai|general','gpt-6-astra'],['openai|image','gpt-image-2.6-sunburst']]))");
  assert.equal(f.run('StarStore.selection().directions["openai|general"]'),'gpt-6-astra');
@@ -93,3 +131,10 @@ test('malformed saved provider context is preserved and cannot be overwritten si
  assert.throws(()=>reload.run("const old=StarStore.loadHistory(); StarStore.saveHistory(old.chats,old.currentId)"),/not changed/);
  assert.deepEqual(tab.values.history,history);
 });
+test('guest restore keeps failed and pending transcripts out of map lookup without discarding words',async()=>{
+ const f=fixture();await f.run('StarStore.initGuest()');f.run("StarStore.saveHistory([{id:'voice',title:'voice',messages:[{role:'user',content:'滁州地图',mapTranscriptPending:true},{role:'user',content:'谢菲尔德地图',mapTranscriptFailed:true}]}],'voice')");await f.run('StarStore.flush()');
+ const reload=fixture({}, {data:f.data,session:f.session,server:f.server});await reload.run('StarStore.initGuest()');
+ assert.equal(reload.run('StarStore.loadHistory().chats[0].messages[0].content'),'滁州地图');assert.equal(reload.run('StarStore.loadHistory().chats[0].messages[0].mapTranscriptFailed'),true);
+ assert.equal(reload.run('StarStore.loadHistory().chats[0].messages[1].content'),'谢菲尔德地图');assert.equal(reload.run('StarStore.loadHistory().chats[0].messages[1].mapTranscriptFailed'),true);
+});
+

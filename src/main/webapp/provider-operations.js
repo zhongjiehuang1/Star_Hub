@@ -8,7 +8,13 @@ function create({storage,crypto,fetch,actor=()=>'',actorEpoch=()=>0,tab,changed=
  const active=new Map(); // In-flight UI state is ephemeral; receipt identities remain durable in session storage.
  function releaseActive(id){if(active.delete(id))changed();}
  function isActive(id){const owner=active.get(id);return Boolean(owner)&&sameOwner(owner);}
- class Pending extends Error{constructor(id,state,message){super(message||'The result is unconfirmed. Check the original request before sending again.');this.operationId=id;this.operationState=state;this.code='PROVIDER_OPERATION_UNKNOWN';}}
+ function pendingMessage(message){
+  const reason=message||'The result is unconfirmed. Check the original request before sending again.';
+  const localized=typeof uiText==='function'?uiText(reason):reason;
+  const hint=typeof t==='function'?t('请在侧栏的服务设置 → 请求记录中查看原请求。'):'Open Service settings → Request history in the sidebar to check the original request.';
+  return localized+' '+hint;
+ }
+ class Pending extends Error{constructor(id,state,message){super(pendingMessage(message));this.operationId=id;this.operationState=state;this.code='PROVIDER_OPERATION_UNKNOWN';}}
  class ActorChanged extends Error{constructor(id){super('The account or tab changed. Return to the original workspace and check its request identity.');this.operationId=id;this.code='ACTOR_CHANGED';}}
  function captureOwner(){const owner={email:String(actor()),tab:tab(),epoch:actorEpoch()};if(!/^[0-9a-f]{32}$/.test(owner.tab)||!Number.isSafeInteger(owner.epoch)||owner.epoch<0)throw new ActorChanged();return owner;}
  function sameOwner(owner){return Boolean(owner)&&String(actor())===owner.email&&tab()===owner.tab&&actorEpoch()===owner.epoch;}
@@ -43,7 +49,7 @@ function create({storage,crypto,fetch,actor=()=>'',actorEpoch=()=>0,tab,changed=
   checkOwner(owner,item.id);const body={...payload,expectedEmail,ownerTab,operationId:item.id};if(kind==='run'&&body.task==='image')body.storageOperationId=item.id;const operation={id:item.id,fresh,body,kind};operationOwners.set(operation,owner);if(options.readOnly)readOnlyOperations.add(operation);return operation;
  }
  function markUnknown(id){releaseActive(id);const all=records(),item=all.find(v=>v.id===id);if(item&&!terminal.has(item.state)){item.state='UNKNOWN';save(all);}}
- function observe(id,value){if(!value||value.operationId!==id||!['ABSENT','CLAIMED','SENT','UNKNOWN','COMPLETED','COMPLETED_NO_RESULT'].includes(value.operationState)||(terminal.has(value.operationState)&&!['dual','single'].includes(value.durability)))throw new Pending(id,'UNKNOWN');if(terminal.has(value.operationState))releaseActive(id);const all=records(),item=all.find(v=>v.id===id);if(item){item.state=value.operationState;if(terminal.has(value.operationState))item.durability=value.durability;else delete item.durability;save(all);}return value;}
+ function observe(id,value,{keepActive=false}={}){if(!value||value.operationId!==id||!['ABSENT','CLAIMED','SENT','UNKNOWN','COMPLETED','COMPLETED_NO_RESULT'].includes(value.operationState)||(terminal.has(value.operationState)&&!['dual','single'].includes(value.durability)))throw new Pending(id,'UNKNOWN');if(terminal.has(value.operationState)&&!keepActive)releaseActive(id);const all=records(),item=all.find(v=>v.id===id);if(item){item.state=value.operationState;if(terminal.has(value.operationState))item.durability=value.durability;else delete item.durability;save(all);}return value;}
  async function queryOwned(id,owner){
   checkOwner(owner,id);const item=records().find(v=>v.id===id),hash=await digest(owner.email);checkOwner(owner,id);
   if(!item||item.tab!==owner.tab||item.actorHash!==hash)throw new Error('This request belongs to another account or tab.');
@@ -69,26 +75,45 @@ function create({storage,crypto,fetch,actor=()=>'',actorEpoch=()=>0,tab,changed=
  async function request(kind,payload,options={}){const operation=await prepare(kind,payload,options),owner=operationOwner(operation);const result=await requestPrepared(operation,{...options,endpoint:options.endpoint||kind});checkOwner(owner,operation.id);return result;}
  function acknowledge(id){releaseActive(id);const all=records(),item=all.find(v=>v.id===id);if(!item||!terminal.has(item.state))return false;save(all.filter(v=>v.id!==id));return true;}
  function discardUnsent(operation){releaseActive(operation?.id);if(!operation?.fresh)return false;const all=records(),item=all.find(v=>v.id===operation.id);if(!item||item.state!=='PENDING')return false;save(all.filter(v=>v.id!==operation.id));return true;}
+ // Call only for a server-confirmed validation rejection before claim.
+ function discardRejected(operation){operationOwner(operation);releaseActive(operation.id);const all=records(),item=all.find(v=>v.id===operation.id);if(!item||item.state!=='PENDING')return false;save(all.filter(v=>v.id!==operation.id));return true;}
  function separate(id){const all=records(),item=all.find(v=>v.id===id);if(item){item.archived=true;save(all);}}
- return {prepare,beforeDispatch,requestPrepared,request,query,observe,markUnknown,acknowledge,discardUnsent,separate,records,visible,isActive,retryDisposition,ownerGuard,Pending};
+ return {prepare,beforeDispatch,requestPrepared,request,query,observe,markUnknown,acknowledge,discardUnsent,discardRejected,separate,records,visible,isActive,retryDisposition,ownerGuard,Pending};
 }
-if(typeof module==='object'&&module.exports)module.exports={create};
+// Only a durable, explicitly identified relay-end receipt can be cleared
+// automatically. An unknown request or a result containing user content stays.
+async function reconcileFinishedRealtime(api,item,isCurrent=()=>true){
+ if(!['realtime','realtime-transcription'].includes(item.kind)||api.isActive(item.id)||!isCurrent())return false;
+ const receipt=await api.query(item.id);if(!isCurrent())return false;
+ const result=receipt.result;
+ if(receipt.operationState==='COMPLETED'&&result?.type==='realtime'&&result.status==='relay_ended'&&result.audioRetained===false){return api.acknowledge(item.id);}
+ return false;
+}
+if(typeof module==='object'&&module.exports)module.exports={create,reconcileFinishedRealtime};
 if(root.document){
- let drawing=false,again=false,viewRevision=0;const summaries=new Map();
+ let drawing=false,again=false,viewRevision=0,reconcileTimer=0;const summaries=new Map(),reconciling=new Set(),nextReconcile=new Map();
  const api=create({storage:{getItem:key=>root.sessionStorage.getItem(key),setItem:(key,value)=>root.sessionStorage.setItem(key,value)},crypto:root.crypto,fetch:(...args)=>root.fetch(...args),actor:()=>typeof accountEmail==='string'?accountEmail:'',actorEpoch:()=>typeof accountIdentityRevision==='number'?accountIdentityRevision:0,tab:()=>StarStore.providerTab(),settle:()=>StarStore.whenSettled(),changed:()=>queueMicrotask(render)});
- function invalidatePanel(){viewRevision++;summaries.clear();const panel=document.getElementById('providerPendingOperations');if(panel){panel.hidden=true;panel.replaceChildren();}queueMicrotask(render);}
+ function invalidatePanel(){viewRevision++;summaries.clear();nextReconcile.clear();if(reconcileTimer){clearTimeout(reconcileTimer);reconcileTimer=0;}const panel=document.getElementById('providerPendingOperations');if(panel){panel.hidden=true;panel.replaceChildren();}queueMicrotask(render);}
  async function render(){if(drawing){again=true;return;}drawing=true;
-  try{const panel=document.getElementById('providerPendingOperations');if(!panel)return;const revision=viewRevision,owner=api.ownerGuard(),active=()=>revision===viewRevision&&owner();const rows=(await api.visible()).filter(item=>!api.isActive(item.id));if(!active())return;panel.hidden=!rows.length;panel.replaceChildren();if(!rows.length)return;
-   const title=document.createElement('p');title.textContent='Unconfirmed requests: check the original result before sending again. A separate request may incur another charge.';panel.append(title);
-   for(const item of rows){const row=document.createElement('p'),label=document.createElement('span');label.textContent=item.kind+' · '+item.id+' · '+item.state+(item.archived?' · separate intent allowed':'');row.append(label);
+  try{const panel=document.getElementById('providerPendingOperations');if(!panel)return;const revision=viewRevision,owner=api.ownerGuard(),active=()=>revision===viewRevision&&owner();const rows=(await api.visible()).filter(item=>!item.kind.startsWith('batch-')&&!api.isActive(item.id));if(!active())return;panel.hidden=!rows.length;panel.replaceChildren();if(!rows.length)return;
+   const live=rows.filter(item=>['realtime','realtime-transcription'].includes(item.kind));
+   for(const item of live){
+    if(reconciling.has(item.id)||Date.now()<(nextReconcile.get(item.id)||0))continue;
+    reconciling.add(item.id);nextReconcile.set(item.id,Date.now()+15000);
+    reconcileFinishedRealtime(api,item,active).catch(()=>{}).finally(()=>{reconciling.delete(item.id);if(active())queueMicrotask(render);});
+   }
+   if(live.length&&!reconcileTimer)reconcileTimer=setTimeout(()=>{reconcileTimer=0;if(!document.hidden)render();},15000);
+   const translate=key=>typeof t==='function'?t(key):key;
+   const title=document.createElement('p');title.textContent=translate('以下请求的状态尚未确认。请先查看原结果；再次发送可能产生额外费用。');panel.append(title);
+   for(const item of rows){const row=document.createElement('p'),label=document.createElement('span');label.textContent=item.kind+' · '+item.id+' · '+item.state+(item.archived?' · '+translate('已允许新请求'):'');row.append(label);
     if(summaries.has(item.id)){const summary=document.createElement('pre');summary.textContent=summaries.get(item.id);row.append(summary);}
-    const check=document.createElement('button');check.type='button';check.textContent='Check original result';check.onclick=async()=>{if(!active())return;check.disabled=true;try{const value=await api.query(item.id);if(!active())return;summaries.set(item.id,String(value.result?.text||value.result?.error||(value.result?.job?'Job '+value.result.job.id+' · '+value.result.job.status:value.operationState==='COMPLETED_NO_RESULT'?'Finished without a retained response. A new request may incur another charge.':value.operationState)).slice(0,4000));document.dispatchEvent(new CustomEvent('starhub:provider-result',{detail:value}));queueMicrotask(render);}catch(error){if(active())label.textContent=error.message;}finally{if(active())check.disabled=false;}};row.append(check);
-    if(['ABSENT','CLAIMED'].includes(item.state)){const retry=document.createElement('button');retry.type='button';retry.textContent='Retry original request';retry.onclick=()=>{if(active())document.dispatchEvent(new CustomEvent('starhub:provider-retry',{detail:{operationId:item.id}}));};row.append(retry);}
-    const separate=document.createElement('button');separate.type='button';separate.textContent=terminal(item.state)?'Acknowledge finished result':'Allow a separate request (may charge again)';separate.onclick=()=>{if(active())return terminal(item.state)?api.acknowledge(item.id):api.separate(item.id);};row.append(separate);panel.append(row);
+    const check=document.createElement('button');check.type='button';check.textContent=translate('查看原结果');check.onclick=async()=>{if(!active())return;check.disabled=true;try{const value=await api.query(item.id);if(!active())return;summaries.set(item.id,String(value.result?.text||value.result?.error||(value.result?.job?'Job '+value.result.job.id+' · '+value.result.job.status:value.operationState==='COMPLETED_NO_RESULT'?'Finished without a retained response. A new request may incur another charge.':value.operationState)).slice(0,4000));document.dispatchEvent(new CustomEvent('starhub:provider-result',{detail:value}));queueMicrotask(render);}catch(error){if(active())label.textContent=error.message;}finally{if(active())check.disabled=false;}};row.append(check);
+    if(['ABSENT','CLAIMED'].includes(item.state)){const retry=document.createElement('button');retry.type='button';retry.textContent=translate('重试原请求');retry.onclick=()=>{if(active())document.dispatchEvent(new CustomEvent('starhub:provider-retry',{detail:{operationId:item.id}}));};row.append(retry);}
+    const separate=document.createElement('button');separate.type='button';separate.textContent=terminal(item.state)?translate('确认已完成的结果'):translate('允许新请求（可能再次收费）');separate.onclick=()=>{if(active())return terminal(item.state)?api.acknowledge(item.id):api.separate(item.id);};row.append(separate);panel.append(row);
    }
   }catch{}finally{drawing=false;if(again){again=false;queueMicrotask(render);}}
  }
  const terminal=state=>['COMPLETED','COMPLETED_NO_RESULT'].includes(state);root.StarProviderOperations=api;
- document.addEventListener('DOMContentLoaded',render);document.addEventListener('starhub:ready',render);document.addEventListener('starhub:account-changed',invalidatePanel);
+ document.addEventListener('DOMContentLoaded',render);document.addEventListener('starhub:ready',render);document.addEventListener('starhub:languagechanged',render);document.addEventListener('visibilitychange',()=>{if(!document.hidden)render();});root.addEventListener?.('online',render);document.addEventListener('starhub:account-changed',invalidatePanel);
 }
 })(globalThis);

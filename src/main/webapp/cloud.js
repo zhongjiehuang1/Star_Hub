@@ -1,7 +1,8 @@
 'use strict';
 let clusterAvailable=false;
 let cloudReady=false,cloudQueue=Promise.resolve(),cloudFailed=false,librarySelection=new Map();
-let fileLibraryPage=1,pendingUploadPage=1,fileLibraryRequest=0,fileLibraryResult=null,fileLibraryOwner=null,fileLibraryEpoch=null,displayedServerId=null;
+let fileLibraryPage=1,pendingUploadPage=1,fileLibraryRequest=0,fileLibraryResult=null,fileLibraryOwner=null,fileLibraryEpoch=null,displayedServerId=null,fileLibraryView='active',fileLibrarySearchTimer=0,fileLibraryFolder='',fileLibraryFolders=[];
+let fileLibraryReadError='',fileLibraryBatch=null;
 const fileLibraryChecked=new Set(),FILE_LIBRARY_PAGE_SIZE=100;
 const pendingFileOperations=new Map();
 function workspaceOwner(expectedEmail,epoch){if(!expectedEmail||accountEmail!==expectedEmail||(epoch!==undefined&&accountIdentityRevision!==epoch)){const error=Error(t('账户已更改，请在原账户中查询未完成操作。'));error.code='ACTOR_CHANGED';error.status=409;throw error;}}
@@ -12,11 +13,11 @@ function workspaceOperation(key){
  pendingFileOperations.set(key,operation);return operation;
 }
 function completeWorkspaceOperation(key,operation){try{sessionStorage.removeItem(key);if(sessionStorage.getItem(key)!==null)return;}catch{return;}if(pendingFileOperations.get(key)===operation)pendingFileOperations.delete(key);}
-function setClusterAvailability(available){clusterAvailable=available;const banner=$('clusterUnavailable');if(banner)banner.hidden=available;for(const id of ['libraryUpload','useLibraryFiles','accountSubmit']){const control=$(id);if(control)control.disabled=!available;}}
+function setClusterAvailability(available){clusterAvailable=available;const banner=$('clusterUnavailable');if(banner)banner.hidden=available;for(const id of ['libraryUpload','useLibraryFiles','accountSubmit']){const control=$(id);if(control)control.disabled=!available||(id!=='accountSubmit'&&!!fileLibraryBatch);}if(typeof updateFileLibraryBatchControls==='function')updateFileLibraryBatchControls();}
 async function checkClusterHealth(){try{const response=await fetch('api/cluster-health',{cache:'no-store',credentials:'same-origin'}),data=await response.json();setClusterAvailability(response.ok&&data.status==='ready');}catch{setClusterAvailability(false);}}
 async function workspaceRequest(data){
  const expectedEmail=accountEmail,epoch=accountIdentityRevision;workspaceOwner(expectedEmail,epoch);
- if(['upload','deleteFile','trashFile','restoreFile','saveChat','deleteChat'].includes(data.action)&&!data.operationId){
+ if(['upload','deleteFile','trashFile','restoreFile','saveChat','deleteChat','createFolder','renameFolder','deleteFolder','moveFile','setMemoryEnabled','deleteMemory','editMemory','saveLocalMemory','saveSemanticMemory'].includes(data.action)&&!data.operationId){
   const hash=Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256',new TextEncoder().encode(JSON.stringify({...data,owner:expectedEmail}))))).map(x=>x.toString(16).padStart(2,'0')).join('');workspaceOwner(expectedEmail,epoch);
   const key='starhub.file-operation.'+hash,operation=workspaceOperation(key);
   data={...data,operationId:operation};
@@ -47,8 +48,8 @@ async function sendWorkspaceRequest(data,expectedEmail,epoch=accountIdentityRevi
  // Freeze the exact body and actor before joining this tab's existing guest
  // queue. Retry only an explicit pre-mutation memory rejection, never unknown
  // outcomes, authentication throttles or provider dispatches.
- const body=JSON.stringify({...data,expectedEmail});let boundedChat=data.action==='listChats',completed=false;
- workspaceActivityCount++;workspaceActivity(t('正在读取或保存，请稍候。当前内容已保留。'));
+ const body=JSON.stringify({...data,expectedEmail});let boundedChat=data.action==='listChats',completed=false,activityVisible=data.action!=='saveChat';
+ if(activityVisible){workspaceActivityCount++;workspaceActivity(t('正在读取或保存，请稍候。当前内容已保留。'));}
  try{for(let attempt=0;;attempt++){
   if(typeof StarStore!=='undefined'){if(['listChats','listFiles','readFile'].includes(data.action)&&StarStore.whenHydrated)await StarStore.whenHydrated();else if(StarStore.whenSettled)await StarStore.whenSettled();}workspaceOwner(expectedEmail,epoch);
   const r=await fetch('api/workspace',{method:'POST',headers:{'Content-Type':'application/json','X-Starhub-Client':'web',...(boundedChat?{'X-Starhub-Bounded-Read':'chat-v1'}:{})},body});
@@ -56,18 +57,18 @@ async function sendWorkspaceRequest(data,expectedEmail,epoch=accountIdentityRevi
   if(!r.ok){
    if(boundedChat&&r.status===413&&d.code==='BOUNDED_CHAT_FALLBACK'){boundedChat=false;workspaceActivity(t('正在加载较大的聊天页面，请稍候。'));continue;}
    const retryAfter=r.headers?.get('Retry-After'),wait=/^[1-3]$/.test(retryAfter||'')?Number(retryAfter)*1000:0;
-   if(r.status===429&&['MEMORY_BUSY','BOUNDED_READ_BUSY'].includes(d.code)&&attempt<2&&wait){workspaceActivity(t('服务器繁忙，正在等待；原请求编号和当前内容已保留。'));await new Promise(resolve=>setTimeout(resolve,wait));workspaceOwner(expectedEmail,epoch);continue;}
+   if(r.status===429&&['MEMORY_BUSY','BOUNDED_READ_BUSY'].includes(d.code)&&attempt<2&&wait){if(!activityVisible){activityVisible=true;workspaceActivityCount++;}workspaceActivity(t('服务器繁忙，正在等待；原请求编号和当前内容已保留。'));await new Promise(resolve=>setTimeout(resolve,wait));workspaceOwner(expectedEmail,epoch);continue;}
    const error=Error(['CLUSTER_UNAVAILABLE','OPERATION_PENDING'].includes(d.code)?t('服务器故障，请等待恢复'):(d.error||d.message||t('账户存储失败')));error.status=r.status;error.code=d.code;
    if(d.code==='CLUSTER_UNAVAILABLE'||d.code==='OPERATION_PENDING')setClusterAvailability(false);throw error;
   }
-  const durability=r.headers?.get('X-Four-Project-Durability');if(!['dual','single'].includes(durability)||(data.operationId&&['upload','deleteFile','trashFile','restoreFile','saveChat','deleteChat'].includes(data.action)&&(d.operationId!==data.operationId||d.operationState!=='COMMITTED'))){const error=Error(t('服务器故障，请等待恢复'));error.code='OPERATION_PENDING';error.operationId=data.operationId;throw error;}
+  const durability=r.headers?.get('X-Four-Project-Durability');if(!['dual','single'].includes(durability)||(data.operationId&&['upload','deleteFile','trashFile','restoreFile','saveChat','deleteChat','createFolder','renameFolder','deleteFolder','moveFile','setMemoryEnabled','deleteMemory','editMemory','saveLocalMemory','saveSemanticMemory'].includes(data.action)&&(d.operationId!==data.operationId||d.operationState!=='COMMITTED'))){const error=Error(t('服务器故障，请等待恢复'));error.code='OPERATION_PENDING';error.operationId=data.operationId;throw error;}
   Object.defineProperty(d,'confirmedDurability',{value:durability,enumerable:false});completed=true;return d;
  }}catch(error){
   const unknown=!error.status||error.status>=500;
   if(unknown&&data.operationId){error.operationId=data.operationId;error.code='OPERATION_PENDING';workspaceActivity(t('结果尚未确认，请保留当前页面和原请求编号后查询。'));}
   else workspaceActivity(error.message||t('读取未完成，当前内容已保留。'));
   throw error;
- }finally{workspaceActivityCount=Math.max(0,workspaceActivityCount-1);if(completed)workspaceActivity(workspaceActivityCount?t('正在处理其他请求，请稍候。'):'');else{const element=$('workspaceActivity');if(element)element.setAttribute('aria-busy',workspaceActivityCount>0?'true':'false');}}
+ }finally{if(activityVisible){workspaceActivityCount=Math.max(0,workspaceActivityCount-1);if(completed)workspaceActivity(workspaceActivityCount?t('正在处理其他请求，请稍候。'):'');else{const element=$('workspaceActivity');if(element)element.setAttribute('aria-busy',workspaceActivityCount>0?'true':'false');}}}
 }
 function forgetFileOperation(operation){
  for(const [key,value] of pendingFileOperations)if(value===operation){pendingFileOperations.delete(key);try{sessionStorage.removeItem(key);}catch{}}
@@ -75,14 +76,14 @@ function forgetFileOperation(operation){
 }
 
 function serialCloud(fn){const result=cloudQueue.then(fn);cloudQueue=result.catch(()=>{});return result;}
-function cleanMessage(m){return {role:m.role,content:m.content||'',provider:m.provider||'',providerName:m.providerName||'',model:m.model||'',providerContext:m.providerContext==null?undefined:StarStore.requiredProviderContext(m),providerOperationId:/^[0-9a-f-]{36}$/.test(m.providerOperationId||'')?m.providerOperationId:undefined,fileIds:m.fileIds||[],imageCount:m.imageCount||0,mediaRefs:StarProviderMedia.references(m.mediaRefs||m.media||[]),imageSaveFailed:Boolean(m.imageSaveFailed),incomplete:Boolean(m.incomplete||m.revealing),reasoningSummary:m.reasoningSummary||'',thinkingSeconds:m.thinkingSeconds,continuationUnavailable:m.continuationUnavailable===true,details:m.details&&(m.details.webCitations||m.details.webSearchUsed)?{webCitations:m.details.webCitations||[],webSearchUsed:!!m.details.webSearchUsed,googleWidget:m.details.googleWidget||''}:undefined};}
+function cleanMessage(m){return {role:m.role,content:m.content||'',memorySource:m.role==='user'&&m.memorySource==='typed'?'typed':undefined,mapChoice:typeof m.mapChoice==='string'&&/^\d{1,12}$/.test(m.mapChoice)?m.mapChoice:undefined,mapTranscriptFailed:m.role==='user'&&(m.mapTranscriptPending===true||m.mapTranscriptFailed===true)?true:undefined,provider:m.provider||'',providerName:m.providerName||'',model:m.model||'',providerContext:m.providerContext==null?undefined:StarStore.requiredProviderContext(m),providerOperationId:/^[0-9a-f-]{36}$/.test(m.providerOperationId||'')?m.providerOperationId:undefined,fileIds:m.fileIds||[],imageCount:m.imageCount||0,mediaRefs:StarProviderMedia.references(m.mediaRefs||m.media||[]),imageSaveFailed:Boolean(m.imageSaveFailed),incomplete:Boolean(m.incomplete),reasoningSummary:m.reasoningSummary||'',thinkingSeconds:m.thinkingSeconds,continuationUnavailable:m.continuationUnavailable===true,details:m.details&&(m.details.webCitations||m.details.webSearchUsed)?{webCitations:m.details.webCitations||[],webSearchUsed:!!m.details.webSearchUsed,googleWidget:m.details.googleWidget||'',...(m.details.realtimeSource==='oai-weather'?{realtimeSource:'oai-weather'}:{})}:undefined};}
 function chatData(c){return {draft:c.draft||'',messages:c.messages.filter(m=>typeof m.content==='string'&&(m.content||/^[0-9a-f-]{36}$/.test(m.providerOperationId||''))).map(cleanMessage)};}
 async function cloudUpload(data,name){const comma=data.indexOf(','),mime=data.slice(5,comma).split(';')[0],encoded=data.slice(comma+1);if(comma<0||!data.startsWith('data:')||!data.slice(0,comma).endsWith(';base64'))throw Error(t('不支持的文件'));return (await workspaceRequest({action:'upload',name,mime,data:encoded})).id;}
 async function readCloudFile(id){const f=await workspaceRequest({action:'readFile',id});return {...f,url:`data:${f.mime};base64,${f.data}`};}
 async function uploadSubmittedFiles(data,files,expectedEmail=accountEmail,active=()=>true){const epoch=accountIdentityRevision;function check(){workspaceOwner(expectedEmail,epoch);if(!active())throw Error('The original file conversation changed.');}check();const ids=[];for(let i=0;i<data.length;i++){check();const key=data[i];if(librarySelection.has(key))ids.push(librarySelection.get(key));else{const id=await cloudUpload(key,files[i]?.name||`attachment-${i+1}`);check();ids.push(id);}}check();librarySelection.clear();return ids;}
 async function hydrateChat(c){const email=accountEmail,epoch=accountIdentityRevision;workspaceOwner(email,epoch);for(const m of c.messages){workspaceOwner(email,epoch);if(m.fileIds?.length){let list=[];for(const id of m.fileIds){try{const file=await readCloudFile(id);workspaceOwner(email,epoch);list.push(file.url);}catch(error){workspaceOwner(email,epoch);m.attachmentOmitted=true;}}if(m.imageCount){m.images=list.slice(0,m.imageCount);m.attachments=list.slice(m.imageCount);}else m.attachments=list;}if(m.mediaRefs?.length)m.mediaRefs=StarProviderMedia.references(m.mediaRefs);if(m.imageSaveFailed)m.warning=t('图片已生成，但未能保存到文件库；请在刷新前下载图片。');}workspaceOwner(email,epoch);c.hydrated=true;}
 async function loadCloudChats(){const owner=accountEmail,epoch=accountIdentityRevision;workspaceOwner(owner,epoch);const result=await StarChatPages.collect(workspaceRequest,()=>Boolean(owner)&&accountEmail===owner&&accountIdentityRevision===epoch,typeof consumeWorkspaceBootstrap==='function'?consumeWorkspaceBootstrap():null);workspaceOwner(owner,epoch);const resultChats=[];for(const item of result.chats){if(!item.data||!Array.isArray(item.data.messages))continue;const c={id:item.id,title:item.title,revision:item.revision,draft:item.data.draft||'',messages:item.data.messages};c.savedPayload=JSON.stringify({title:c.title,data:chatData(c)});c.savedDurability=result.confirmedDurability;c.hydrated=false;resultChats.push(c);}return resultChats;}
-async function saveCloudChats(){if(!accountEmail||!cloudReady)return;if(cloudFailed)throw Error(t('云端保存失败。刷新前请导出此对话。'));const email=accountEmail,epoch=accountIdentityRevision,queuedChats=[...chats];await serialCloud(async()=>{workspaceOwner(email,epoch);for(const c of queuedChats){workspaceOwner(email,epoch);if(!c.messages.length)continue;const data=chatData(c),signature=JSON.stringify({title:c.title,data});if(c.savedPayload===signature)continue;try{const r=await workspaceRequest({action:'saveChat',id:c.id,title:c.title,data,revision:c.revision||0});workspaceOwner(email,epoch);c.revision=r.revision;c.savedPayload=signature;c.savedDurability=r.confirmedDurability;}catch(e){if(accountEmail===email&&accountIdentityRevision===epoch){if(!(e.status===429&&e.code==='MEMORY_BUSY'))cloudFailed=true;if(e.status===401)requestReauthentication(email);else showError(e.message+t('更改仍保留在当前页面。'));}throw e;}}});}
+async function saveCloudChats(){if(!accountEmail||!cloudReady)return;if(cloudFailed)throw Error(t('云端保存失败。刷新前请导出此对话。'));const email=accountEmail,epoch=accountIdentityRevision,queuedChats=[...chats];await serialCloud(async()=>{workspaceOwner(email,epoch);for(const c of queuedChats){workspaceOwner(email,epoch);if(c.deleting||c.deleted||!chats.includes(c)||!c.messages.length)continue;const data=chatData(c),signature=JSON.stringify({title:c.title,data});if(c.savedPayload===signature)continue;try{const r=await workspaceRequest({action:'saveChat',id:c.id,title:c.title,data,revision:c.revision||0});workspaceOwner(email,epoch);c.revision=r.revision;c.savedPayload=signature;c.savedDurability=r.confirmedDurability;}catch(e){if(accountEmail===email&&accountIdentityRevision===epoch){if(!(e.status===429&&e.code==='MEMORY_BUSY'))cloudFailed=true;if(e.status===401)requestReauthentication(email);else showError(e.message+t('更改仍保留在当前页面。'));}throw e;}}});}
 async function saveCloudChatsConfirmed(expectedEmail,chatId){
  const epoch=accountIdentityRevision;
  if(!expectedEmail||accountEmail!==expectedEmail||!cloudReady||cloudFailed)throw Error('The original account workspace is not ready for confirmed saving.');
@@ -91,7 +92,7 @@ async function saveCloudChatsConfirmed(expectedEmail,chatId){
  if(accountEmail!==expectedEmail||accountIdentityRevision!==epoch||!cloudReady||cloudFailed||!target||target.savedPayload!==JSON.stringify({title:target.title,data:chatData(target)})||!['dual','single'].includes(target.savedDurability))throw Error('The provider result is not confirmed in the original account workspace.');
  return {durability:target.savedDurability};
 }
-async function deleteCloudChat(c){if(!accountEmail||!cloudReady)return;const email=accountEmail,epoch=accountIdentityRevision;await serialCloud(async()=>{workspaceOwner(email,epoch);if(!c.revision)return;await workspaceRequest({action:'deleteChat',id:c.id,revision:c.revision});workspaceOwner(email,epoch);c.revision=0;c.savedPayload='';});}
+async function deleteCloudChat(c){if(!accountEmail||!cloudReady)throw Error(t('账户对话尚未加载完成，请稍后再删除。'));const email=accountEmail,epoch=accountIdentityRevision;await serialCloud(async()=>{workspaceOwner(email,epoch);if(!cloudReady)throw Error(t('账户对话尚未加载完成，请稍后再删除。'));if(!c.revision){if(cloudFailed)throw Error(t('云端状态未确认，请刷新后再删除。'));c.deleted=true;return;}await workspaceRequest({action:'deleteChat',id:c.id,revision:c.revision});workspaceOwner(email,epoch);c.deleted=true;});}
 async function importGeneratedImage(ref,sourceOperation,expectedEmail,epoch){
  function check(){workspaceOwner(expectedEmail);if(typeof accountIdentityRevision!=='undefined'&&accountIdentityRevision!==epoch)throw Error('The import account changed. Original image references are retained.');}
  check();if(!/^[0-9a-f-]{36}$/.test(sourceOperation||'')||!ref.mediaRef||ref.mediaRef.operationId!==sourceOperation)throw Error('The original guest image reference is unavailable.');
@@ -208,28 +209,37 @@ async function loadServerIdentity(){
  catch{if(request!==serverIdentityRequest)return;displayedServerId=null;serverIdentityState='unavailable';}
  renderServerIdentity();
 }
+function updateFileLibraryBatchControls(){
+ const busy=!!fileLibraryBatch,button=$('trashSelectedFiles');
+ button.hidden=fileLibraryView!=='active';button.disabled=busy||!clusterAvailable||!fileLibraryChecked.size;
+ $('libraryFiles').inert=busy;
+ for(const id of ['fileLibraryAll','fileLibraryTrash','fileLibrarySearch','fileLibraryRoot','createLibraryFolder','closeFileLibrary'])$(id).disabled=busy;
+ $('libraryUpload').disabled=busy||!clusterAvailable;$('useLibraryFiles').disabled=busy||!clusterAvailable;
+}
 function renderFileLibraryStatus(){
+ updateFileLibraryBatchControls();
  if(!fileLibraryResult)return;
  const r=fileLibraryResult,total=r.total,pages=Math.max(1,Math.ceil(total/r.pageSize));
  $('libraryUsage').textContent=t('{0} / {1} GB · 包含回收箱和待完成上传',(r.used/1_000_000_000).toFixed(3),(r.quota/1_000_000_000).toLocaleString(undefined,{maximumFractionDigits:3}));
  const start=total===0?0:(r.page-1)*r.pageSize+1,end=total===0?0:start+r.files.length-1;
  $('fileLibraryPageInfo').textContent=t('{0}–{1} / {2} 个文件 · 第 {3} / {4} 页',start,end,total,r.page,pages);
  $('fileLibrarySelection').textContent=t('已选择 {0} 个文件',fileLibraryChecked.size);
- $('fileLibraryPrevious').disabled=r.page<=1;$('fileLibraryNext').disabled=!r.hasNext;
+ $('fileLibraryPrevious').disabled=!!fileLibraryBatch||r.page<=1;$('fileLibraryNext').disabled=!!fileLibraryBatch||!r.hasNext;
 }
-async function openLibrary(){if(!accountEmail){showError(t('请登录后使用文件库。'));return;}const d=$('libraryDialog');if(!d.open){fileLibraryChecked.clear();d.showModal();}await refreshFiles(1);}
+async function openLibrary(){if(!accountEmail){showError(t('请登录后使用文件库。'));return;}const d=$('libraryDialog');if(!d.open){fileLibraryChecked.clear();fileLibraryView='active';fileLibraryFolder='';$('fileLibrarySearch').value='';updateFileLibraryView();d.showModal();}await refreshFiles(1);}
 async function refreshFiles(page=fileLibraryPage){
  const request=++fileLibraryRequest,email=accountEmail,epoch=accountIdentityRevision,out=$('libraryFiles');
  const libraryContextCurrent=()=>request===fileLibraryRequest&&email===accountEmail&&epoch===accountIdentityRevision;
  if(fileLibraryOwner!==email||fileLibraryEpoch!==epoch){fileLibraryOwner=email;fileLibraryEpoch=epoch;fileLibraryResult=null;pendingUploadPage=1;fileLibraryChecked.clear();librarySelection.clear();out.replaceChildren();$('libraryUsage').textContent='';$('fileLibraryPageInfo').textContent='';$('fileLibrarySelection').textContent='';}
  $('fileLibraryPrevious').disabled=true;$('fileLibraryNext').disabled=true;out.setAttribute('aria-busy','true');
  try{
-  const r=await workspaceRequest({action:'listFiles',page,pageSize:FILE_LIBRARY_PAGE_SIZE,pendingPage:pendingUploadPage});
+  const r=await workspaceRequest({action:'listFiles',page,pageSize:FILE_LIBRARY_PAGE_SIZE,pendingPage:pendingUploadPage,view:fileLibraryView,folderId:fileLibraryFolder,search:($('fileLibrarySearch').value||'').trim()});
   if(request!==fileLibraryRequest||email!==accountEmail||epoch!==accountIdentityRevision)return;
   if(!Array.isArray(r.files)||!Number.isSafeInteger(r.total)||r.total<0||!Number.isSafeInteger(r.page)||r.page<1||!Number.isSafeInteger(r.pageSize)||r.pageSize<1||!Number.isFinite(r.used)||r.used<0||!Number.isFinite(r.quota)||r.quota<=0)throw Error(t('账户存储失败'));
+  if(fileLibraryReadError&&$('libraryMessage').textContent===fileLibraryReadError)$('libraryMessage').textContent='';fileLibraryReadError='';
   const lastPage=Math.max(1,Math.ceil(r.total/r.pageSize));
   if(r.page>lastPage){await refreshFiles(lastPage);return;}
-  fileLibraryPage=r.page;fileLibraryResult=r;out.replaceChildren();
+  fileLibraryPage=r.page;fileLibraryResult=r;fileLibraryFolders=Array.isArray(r.folders)?r.folders:[];out.replaceChildren();updateFileLibraryView();
   if(Array.isArray(r.pendingImageGenerations)&&r.pendingImageGenerations.length){
    const heading=document.createElement('div');heading.className='file-row';heading.textContent=t('生成图片的待完成请求已计入预留配额。请在原标签页查询结果，不要重复发送。');out.append(heading);
    for(const pending of r.pendingImageGenerations){const row=document.createElement('div');row.className='file-row';row.textContent=String(pending.operationId||'')+' · '+((pending.reservedBytes||0)/1_000_000).toFixed(3)+' MB · '+String(pending.state||'UNKNOWN');out.append(row);}
@@ -247,27 +257,70 @@ async function refreshFiles(page=fileLibraryPage){
    }
    if((r.pendingTotal||0)>100){const controls=document.createElement('div');controls.className='file-row';for(const direction of [-1,1]){const button=document.createElement('button');button.type='button';button.textContent=t(direction<0?'上一批待完成上传':'下一批待完成上传');button.disabled=direction<0?pendingUploadPage<=1:!r.pendingHasNext;button.onclick=()=>{pendingUploadPage+=direction;refreshFiles();};controls.append(button);}out.append(controls);}
   }
+  const search=($('fileLibrarySearch').value||'').trim().toLocaleLowerCase();
+  const visibleFolders=fileLibraryView==='active'&&!fileLibraryFolder?fileLibraryFolders.filter(f=>!search||String(f.name).toLocaleLowerCase().includes(search)):[];
+  for(const folder of visibleFolders){
+   const row=document.createElement('div');row.className='file-row library-entry library-folder';const open=document.createElement('button');open.type='button';open.className='library-folder-open';
+   const icon=document.createElement('span');icon.className='library-file-icon library-folder-icon';icon.textContent='▱';const name=document.createElement('span');name.className='library-file-name';name.textContent=folder.name;name.setAttribute('data-no-i18n','');open.append(icon,name);
+   open.onclick=()=>{if(!libraryContextCurrent())return;fileLibraryFolder=folder.id;$('fileLibrarySearch').value='';updateFileLibraryView();refreshFiles(1);};
+   const date=document.createElement('span');date.className='library-file-date';const d=new Date(folder.createdAt||'');date.textContent=Number.isNaN(d.getTime())?'—':new Intl.DateTimeFormat(language==='zh'?'zh-CN':'en-GB',{day:'numeric',month:'short',year:'numeric'}).format(d);
+   const size=document.createElement('span');size.className='library-file-size';size.textContent='—';const menu=document.createElement('details');menu.className='library-file-menu';const summary=document.createElement('summary');summary.textContent='⋯';summary.setAttribute('aria-label',t('文件夹操作：{0}',folder.name));const actions=document.createElement('div');actions.className='library-file-actions';
+   const rename=document.createElement('button');rename.type='button';rename.textContent=t('重命名文件夹');rename.onclick=async()=>{const value=window.prompt(t('输入新的文件夹名称'),folder.name);if(value===null||!value.trim()||!libraryContextCurrent())return;try{await workspaceRequest({action:'renameFolder',folderId:folder.id,name:value.trim()});await refreshFiles();}catch(e){$('libraryMessage').textContent=e.message;}};
+   const del=document.createElement('button');del.type='button';del.textContent=t('删除空文件夹');del.onclick=async()=>{if(!libraryContextCurrent()||!confirm(t('删除这个空文件夹？')))return;try{await workspaceRequest({action:'deleteFolder',folderId:folder.id});await refreshFiles();}catch(e){$('libraryMessage').textContent=e.message;}};
+   actions.append(rename,del);menu.append(summary,actions);row.append(open,date,size,menu);out.append(row);
+  }
+  if(!r.files.length&&!visibleFolders.length){const empty=document.createElement('p');empty.className='file-library-empty';empty.textContent=t(($('fileLibrarySearch').value||'').trim()?'没有找到匹配的文件。':fileLibraryView==='trash'?'回收箱是空的。':'文件库还是空的。');out.append(empty);}
   for(const f of r.files){
    if(f.trashed)fileLibraryChecked.delete(f.id);
-   const row=document.createElement('div');row.className='file-row';
+   const row=document.createElement('div');row.className='file-row library-entry';
    const label=document.createElement('label'),check=document.createElement('input');check.type='checkbox';check.value=f.id;check.disabled=f.trashed;check.className='file-choice';check.checked=fileLibraryChecked.has(f.id);
-   check.onchange=()=>{if(!libraryContextCurrent())return;if(check.checked)fileLibraryChecked.add(f.id);else fileLibraryChecked.delete(f.id);renderFileLibraryStatus();};
-   label.append(check,document.createTextNode(` ${f.name} (${(f.size/1024).toFixed(1)} KiB)${f.trashed?' · '+t('回收箱'):''}`));
-   const toggle=document.createElement('button');toggle.type='button';toggle.textContent=f.trashed?t('恢复'):t('移入回收箱');
-   toggle.onclick=async()=>{if(!libraryContextCurrent())return;toggle.disabled=true;try{await workspaceRequest({action:f.trashed?'restoreFile':'trashFile',id:f.id});fileLibraryChecked.delete(f.id);await refreshFiles();}catch(e){$('libraryMessage').textContent=e.message;}finally{toggle.disabled=false;}};
-   row.append(label,toggle);
-   if(f.trashed){const del=document.createElement('button');del.type='button';del.textContent=t('永久删除');del.onclick=async()=>{if(!libraryContextCurrent())return;if(!confirm(t('确认永久删除此文件？')))return;del.disabled=true;try{await workspaceRequest({action:'deleteFile',id:f.id});fileLibraryChecked.delete(f.id);await refreshFiles();}catch(e){$('libraryMessage').textContent=e.message;}finally{del.disabled=false;}};row.append(del);}
-   out.append(row);
+   check.setAttribute('aria-label',t('选择文件：{0}',f.name));check.onchange=()=>{if(!libraryContextCurrent())return;if(check.checked)fileLibraryChecked.add(f.id);else fileLibraryChecked.delete(f.id);renderFileLibraryStatus();};
+   const icon=document.createElement('span');icon.className='library-file-icon';const mime=String(f.mime||'');icon.textContent=mime.startsWith('image/')?'IMG':mime==='application/pdf'?'PDF':mime.startsWith('audio/')?'♫':mime==='text/plain'?'TXT':'FILE';
+   const name=document.createElement('span');name.className='library-file-name';name.textContent=f.name;name.title=f.name;name.setAttribute('data-no-i18n','');label.append(check,icon,name);
+   const date=document.createElement('span');date.className='library-file-date';const d=new Date(f.createdAt||'');date.textContent=Number.isNaN(d.getTime())?'—':new Intl.DateTimeFormat(language==='zh'?'zh-CN':'en-GB',{day:'numeric',month:'short',year:'numeric'}).format(d);
+   const size=document.createElement('span');size.className='library-file-size';size.textContent=f.size>=1024*1024?(f.size/1024/1024).toFixed(2)+' MB':(f.size/1024).toFixed(1)+' KB';
+   const menu=document.createElement('details');menu.className='library-file-menu';const summary=document.createElement('summary');summary.textContent='⋯';summary.setAttribute('aria-label',t('文件操作：{0}',f.name));menu.append(summary);
+   const actions=document.createElement('div');actions.className='library-file-actions';const toggle=document.createElement('button');toggle.type='button';toggle.textContent=f.trashed?t('恢复'):t('移入回收箱');
+   toggle.onclick=async()=>{if(!libraryContextCurrent())return;toggle.disabled=true;try{await workspaceRequest({action:f.trashed?'restoreFile':'trashFile',id:f.id});fileLibraryChecked.delete(f.id);await refreshFiles();}catch(e){$('libraryMessage').textContent=e.message;}finally{toggle.disabled=false;}};actions.append(toggle);
+   if(!f.trashed){const download=document.createElement('button');download.type='button';download.textContent=t('下载');download.onclick=async()=>{if(!libraryContextCurrent())return;download.disabled=true;try{const file=await readCloudFile(f.id);if(!libraryContextCurrent())return;const bytes=Uint8Array.from(atob(file.data),c=>c.charCodeAt(0)),url=URL.createObjectURL(new Blob([bytes],{type:file.mime}));const link=document.createElement('a');link.href=url;link.download=file.name;link.click();setTimeout(()=>URL.revokeObjectURL(url),1000);}catch(e){if(libraryContextCurrent())$('libraryMessage').textContent=e.message;}finally{download.disabled=false;}};actions.append(download);const move=document.createElement('select');move.className='library-move-target';move.setAttribute('aria-label',t('移动文件：{0}',f.name));const root=new Option(t('所有文件'),'');move.append(root);for(const folder of fileLibraryFolders)move.append(new Option(folder.name,folder.id));move.value=f.folderId||'';const button=document.createElement('button');button.type='button';button.textContent=t('移动');button.onclick=async()=>{if(!libraryContextCurrent())return;button.disabled=true;try{await workspaceRequest({action:'moveFile',id:f.id,folderId:move.value});await refreshFiles();}catch(e){$('libraryMessage').textContent=e.message;}finally{button.disabled=false;}};actions.append(move,button);}
+   if(f.trashed){const del=document.createElement('button');del.type='button';del.textContent=t('永久删除');del.onclick=async()=>{if(!libraryContextCurrent())return;if(!confirm(t('确认永久删除此文件？')))return;del.disabled=true;try{await workspaceRequest({action:'deleteFile',id:f.id});fileLibraryChecked.delete(f.id);await refreshFiles();}catch(e){$('libraryMessage').textContent=e.message;}finally{del.disabled=false;}};actions.append(del);}
+   menu.append(actions);row.append(label,date,size,menu);out.append(row);
   }
   renderFileLibraryStatus();
- }catch(e){if(request===fileLibraryRequest&&email===accountEmail&&epoch===accountIdentityRevision){$('libraryMessage').textContent=e.message;renderFileLibraryStatus();}}
+ }catch(e){if(request===fileLibraryRequest&&email===accountEmail&&epoch===accountIdentityRevision){if(e.code==='FOLDER_NOT_FOUND'&&fileLibraryFolder){fileLibraryFolder='';updateFileLibraryView();await refreshFiles(1);$('libraryMessage').textContent=t('文件夹已不存在，已返回全部文件。');}else{fileLibraryReadError=e.message;$('libraryMessage').textContent=e.message;renderFileLibraryStatus();}}}
  finally{if(request===fileLibraryRequest&&epoch===accountIdentityRevision)out.setAttribute('aria-busy','false');}
 }
+function updateFileLibraryView(){for(const [id,view] of [['fileLibraryAll','active'],['fileLibraryTrash','trash']]){const button=$(id),selected=fileLibraryView===view;button.classList.toggle('active',selected);button.setAttribute('aria-pressed',String(selected));}const folder=fileLibraryFolders.find(f=>f.id===fileLibraryFolder);$('fileLibraryBreadcrumb').hidden=!folder||fileLibraryView!=='active';$('fileLibraryFolderName').textContent=folder?.name||'';$('createLibraryFolder').hidden=fileLibraryView!=='active';updateFileLibraryBatchControls();}
+$('fileLibraryAll').onclick=()=>{fileLibraryView='active';fileLibraryFolder='';updateFileLibraryView();refreshFiles(1);};$('fileLibraryTrash').onclick=()=>{fileLibraryView='trash';fileLibraryFolder='';updateFileLibraryView();refreshFiles(1);};
+$('fileLibraryRoot').onclick=()=>{fileLibraryFolder='';updateFileLibraryView();refreshFiles(1);};
+$('createLibraryFolder').onclick=async()=>{const name=window.prompt(t('输入文件夹名称'));if(name===null||!name.trim())return;const email=accountEmail,epoch=accountIdentityRevision;try{await workspaceRequest({action:'createFolder',name:name.trim()});workspaceOwner(email,epoch);await refreshFiles(1);}catch(e){if(accountEmail===email&&accountIdentityRevision===epoch)$('libraryMessage').textContent=e.message;}};
+$('fileLibrarySearch').oninput=()=>{fileLibraryRequest++;clearTimeout(fileLibrarySearchTimer);fileLibrarySearchTimer=setTimeout(()=>refreshFiles(1),250);};
 $('openLibrary').onclick=openLibrary;$('closeFileLibrary').onclick=()=>$('libraryDialog').close();
+$('libraryDialog').oncancel=event=>{if(fileLibraryBatch)event.preventDefault();};
 $('fileLibraryPrevious').onclick=()=>refreshFiles(Math.max(1,fileLibraryPage-1));$('fileLibraryNext').onclick=()=>refreshFiles(fileLibraryPage+1);
-$('libraryUpload').onchange=async()=>{const files=[...$('libraryUpload').files],email=accountEmail,epoch=accountIdentityRevision;const check=()=>workspaceOwner(email,epoch);$('libraryMessage').textContent=t('上传中…');try{check();for(const f of files){check();if(f.size>4*1024*1024)throw Error(t('每个文件最多 4 MiB。'));const data=await readFileData(f);check();await cloudUpload(data,f.name);check();} $('libraryMessage').textContent=t('已上传。');await refreshFiles(1);}catch(e){if(accountEmail===email&&accountIdentityRevision===epoch)$('libraryMessage').textContent=e.message;}finally{if(accountEmail===email&&accountIdentityRevision===epoch)$('libraryUpload').value='';}};
+$('trashSelectedFiles').onclick=async()=>{
+ if(fileLibraryBatch||fileLibraryView!=='active'||!clusterAvailable||!fileLibraryChecked.size)return;
+ const email=accountEmail,epoch=accountIdentityRevision,ids=[...fileLibraryChecked];
+ if(!confirm(t('将选中的 {0} 个文件移入回收箱？',ids.length)))return;
+ const batch=fileLibraryBatch={email,epoch},current=()=>fileLibraryBatch===batch&&accountEmail===email&&accountIdentityRevision===epoch;
+ clearTimeout(fileLibrarySearchTimer);fileLibraryRequest++;
+ let moved=0,error=null;renderFileLibraryStatus();
+ try{
+  for(const id of ids){
+   workspaceOwner(email,epoch);if(!current())return;
+   $('libraryMessage').textContent=t('正在移动文件到回收箱：{0} / {1}。',moved,ids.length);
+   try{await workspaceRequest({action:'trashFile',id});workspaceOwner(email,epoch);if(!current())return;fileLibraryChecked.delete(id);moved++;}
+   catch(e){workspaceOwner(email,epoch);if(!current())return;error=e;break;}
+  }
+  if(!current())return;
+  await refreshFiles();if(!current())return;
+  $('libraryMessage').textContent=error?t('已移动 {0} 个文件，另有 {1} 个仍被选中。{2}',moved,ids.length-moved,error.code==='OPERATION_PENDING'?t('有一项操作结果尚未确认；请查看回收箱，或重试以查询原操作。'):error.message):t('已将 {0} 个文件移入回收箱。',moved);
+ }catch(e){if(current())$('libraryMessage').textContent=e.message;}
+ finally{if(current()){fileLibraryBatch=null;renderFileLibraryStatus();}}
+};
+$('libraryUpload').onchange=async()=>{const files=[...$('libraryUpload').files],email=accountEmail,epoch=accountIdentityRevision,targetFolder=fileLibraryView==='active'?fileLibraryFolder:'';const check=()=>workspaceOwner(email,epoch);$('libraryMessage').textContent=t('上传中…');try{check();for(const f of files){check();if(f.size>4*1024*1024)throw Error(t('每个文件最多 4 MiB。'));const data=await readFileData(f);check();const id=await cloudUpload(data,f.name);check();if(targetFolder){try{await workspaceRequest({action:'moveFile',id,folderId:targetFolder});}catch(e){check();throw Error(t('文件已上传到全部文件，但未能移入文件夹：{0}',e.message));}check();}} $('libraryMessage').textContent=t('已上传。');await refreshFiles(1);}catch(e){if(accountEmail===email&&accountIdentityRevision===epoch)$('libraryMessage').textContent=e.message;}finally{if(accountEmail===email&&accountIdentityRevision===epoch)$('libraryUpload').value='';}};
 $('useLibraryFiles').onclick=async()=>{const email=accountEmail,epoch=accountIdentityRevision,ids=[...fileLibraryChecked];const check=()=>workspaceOwner(email,epoch);if(!ids.length||ids.length>4){$('libraryMessage').textContent=t('请选择 1–4 张图片。');return;}try{check();let files=[];for(const id of ids){const file=await readCloudFile(id);check();files.push({...file,id});}check();if(files.some(f=>!['image/png','image/jpeg','image/webp'].includes(f.mime))||files.reduce((n,f)=>n+atob(f.data).length,0)>4*1024*1024)throw Error(t('聊天支持 1–4 张 PNG、JPEG 或 WebP 图片，总计不超过 4 MiB。'));if(!selectedModel()?.inputs.includes('image')||$('task').value!=='chat')throw Error(t('请先选择支持图片的聊天模型。'));newChat();const transfer=new DataTransfer();librarySelection.clear();for(const f of files){const bytes=Uint8Array.from(atob(f.data),c=>c.charCodeAt(0));transfer.items.add(new File([bytes],f.name,{type:f.mime}));librarySelection.set(f.url,f.id);}$('inputFile').files=transfer.files;$('inputFile').dispatchEvent(new Event('change'));$('libraryDialog').close();}catch(e){$('libraryMessage').textContent=e.message;}};
-document.addEventListener('starhub:account-changed',()=>{fileLibraryRequest++;fileLibraryEpoch=null;fileLibraryResult=null;fileLibraryChecked.clear();librarySelection.clear();$('libraryFiles').replaceChildren();for(const id of ['libraryUsage','fileLibraryPageInfo','fileLibrarySelection','libraryMessage'])$(id).textContent='';});
+document.addEventListener('starhub:account-changed',()=>{fileLibraryBatch=null;fileLibraryRequest++;fileLibraryEpoch=null;fileLibraryResult=null;fileLibraryFolders=[];fileLibraryFolder='';fileLibraryReadError='';fileLibraryChecked.clear();librarySelection.clear();$('libraryFiles').replaceChildren();updateFileLibraryBatchControls();for(const id of ['libraryUsage','fileLibraryPageInfo','fileLibrarySelection','libraryMessage'])$(id).textContent='';});
 document.addEventListener('starhub:languagechanged',()=>{renderFileLibraryStatus();renderServerIdentity();});
 loadServerIdentity();
 window.addEventListener('pageshow',event=>{if(event.persisted)loadServerIdentity();});

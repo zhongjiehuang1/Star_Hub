@@ -1,6 +1,6 @@
 # Star Hub
 
-> **Current deployment.** Both application hosts share the single production MySQL instance on Server 2. Each entrance serves its local application, with no automatic application or database failover. See local OneDrive `Linux_Server_2026-11-13/REBUILD_AND_OPERATIONS.md` for current operations.
+> **Current deployment.** Both application hosts share the single production MySQL instance on Server 2. Each entrance serves its local application, with no automatic application or database failover. See local OneDrive `Linux_Server_2026-11-14/SERVER_CURRENT_STATE.md` for current server state and `Linux_Server_2026-11-14/Recovery_Tools/README.md` for recovery operations.
 
 A bilingual workspace for calling official AI model APIs from one website. Built with Java, plain HTML/CSS/JavaScript and a WAR deployed in an existing Tomcat 11 runtime.
 
@@ -12,7 +12,6 @@ A bilingual workspace for calling official AI model APIs from one website. Built
 - Chat with progressively revealed streaming replies, use image understanding, and enable provider-supported web search where available.
 - Use a temporary guest session or sign in to an existing account to save conversations, files and encrypted provider keys. Registration is closed.
 - Generate images or speech, transcribe audio and create embeddings through the implemented OpenAI endpoints.
-- Submit OpenAI JSONL batch jobs, recover paginated job lists, inspect status, retrieve output/error files and export results.
 - Use OpenAI realtime voice with microphone input, audio playback, interruption and explicit session controls.
 - See only the settings supported by the selected model, with a second validation step on the server.
 - Access provider key-management links and supported model controls. The home page keeps API call code out of the main interface; separately available source remains inspectable.
@@ -61,7 +60,7 @@ Files and their bytes, metadata, trash, quota reservations and operation state a
 
 Each account has a 2,000,000,000-byte library quota including trash and pending reservations. The disk safety floor is 4,000,000,000 bytes, with physical availability checked by the capacity admission mechanism; privileged system activity may cross a filesystem reservation. Uploads can be rejected before the account quota if disk capacity is insufficient. Two simultaneously near-full quotas have not been validated by a full physical fill test.
 
-See [storage and recovery](docs/distributed-storage.md) for the current data and operation contract. Use the current `Linux_Server_2026-11-13/REBUILD_AND_OPERATIONS.md` in local OneDrive and the reviewed IAFM `ops/single-database` tools. Preserve protected database configuration, vault keys, TLS, identity/session state and a verified recovery copy; do not place credentials in the source or deployment archive.
+See [storage and recovery](docs/distributed-storage.md) for the current data and operation contract. Use `Linux_Server_2026-11-14/SERVER_CURRENT_STATE.md` and `Linux_Server_2026-11-14/Recovery_Tools/README.md` in local OneDrive. Preserve protected database configuration, vault keys, TLS, identity/session state and a verified recovery copy; do not place credentials in the source or deployment archive.
 
 ### Regional tester access
 

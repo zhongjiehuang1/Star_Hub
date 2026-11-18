@@ -16,6 +16,7 @@ public final class RealtimeEndpoint {
     private static final Semaphore SLOTS=new Semaphore(4);
     private static final ScheduledExecutorService TIMER=Executors.newSingleThreadScheduledExecutor(r->{Thread t=new Thread(r,"starhub-realtime-timeout");t.setDaemon(true);return t;});
     private static final ExecutorService EXECUTOR=Executors.newFixedThreadPool(4,r->{Thread t=new Thread(r,"starhub-realtime-io");t.setDaemon(true);return t;});
+    private static final ExecutorService SEARCH=new ThreadPoolExecutor(1,1,0L,TimeUnit.MILLISECONDS,new ArrayBlockingQueue<>(4),r->{Thread t=new Thread(r,"starhub-realtime-search");t.setDaemon(true);return t;},new ThreadPoolExecutor.AbortPolicy());
     private static final HttpClient CLIENT=HttpClient.newBuilder().executor(EXECUTOR).connectTimeout(Duration.ofSeconds(12)).followRedirects(HttpClient.Redirect.NEVER).version(HttpClient.Version.HTTP_1_1).build();
     private RealtimeBridge bridge;private ScheduledFuture<?> timeout;private boolean acquired;
     public static class Origin extends ServerEndpointConfig.Configurator {
@@ -35,7 +36,7 @@ public final class RealtimeEndpoint {
         bridge=new RealtimeBridge(new RealtimeBridge.Downstream(){
             public CompletionStage<Void> send(String text){CompletableFuture<Void> result=new CompletableFuture<>();if(!session.isOpen()){result.completeExceptionally(new IllegalStateException());return result;}session.getAsyncRemote().sendText(text,r->{if(r.isOK())result.complete(null);else result.completeExceptionally(r.getException());});return result;}
             public void close(){try{session.close();}catch(Exception ignored){}release();}
-        },RealtimeBridge.network(CLIENT),new RealtimeOperation(config.getUserProperties().get("starhub.httpSession") instanceof HttpSession s?s:null));
+        },RealtimeBridge.network(CLIENT),new RealtimeOperation(config.getUserProperties().get("starhub.httpSession") instanceof HttpSession s?s:null),RealtimeWebSearch::search,SEARCH);
         timeout=TIMER.scheduleAtFixedRate(()->{if(bridge.expired())bridge.fail("实时会话超时，请重新连接。");},10,10,TimeUnit.SECONDS);
     }
     @OnMessage public void message(String text){if(bridge!=null)bridge.receive(text);}
@@ -44,6 +45,6 @@ public final class RealtimeEndpoint {
     @OnError public void error(Throwable ignored){if(bridge!=null)bridge.close();release();}
     private synchronized void release(){if(timeout!=null)timeout.cancel(false);ACTIVE.remove(this);if(acquired){acquired=false;SLOTS.release();}}
     @WebListener public static class Lifecycle implements ServletContextListener {
-        public void contextDestroyed(ServletContextEvent event){for(RealtimeEndpoint e:ACTIVE)e.close();TIMER.shutdownNow();EXECUTOR.shutdownNow();}
+        public void contextDestroyed(ServletContextEvent event){for(RealtimeEndpoint e:ACTIVE)e.close();TIMER.shutdownNow();SEARCH.shutdownNow();EXECUTOR.shutdownNow();}
     }
 }

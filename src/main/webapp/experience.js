@@ -82,18 +82,19 @@ $('checkConnection').onclick=checkConnection;
 $('finishSetup').onclick=()=>{
   if(wizardChecking||wizardBlocked)return;const p=setupProvider(),m=setupModel(),key=$('setupKey').value.trim();
   keys.set(p.id,key);if(!StarStore.saveKeys(keys))showError(t('无法保存临时会话，请检查浏览器存储空间。'));if(wizardVerified)verifiedKeys.set(p.id,key);
-  $('modelSearch').value='';$('provider').value=p.id;selectProvider(m.id);
+  $('provider').value=p.id;selectProvider(m.id);
   $('connectionSettings').open=false;StarStore.write('settingsOpen',false);$('setupDialog').close();refreshConnectionSummary();$('prompt').focus({preventScroll:true});
 };
 $('connectionSettings').addEventListener('toggle',()=>{if(experienceReady)StarStore.write('settingsOpen',$('connectionSettings').open);});
 $('prompt').addEventListener('input',scheduleHistorySave);
 $('inputFile').addEventListener('change',async()=>{
+  renderChatAttachments();
   const files=[...$('inputFile').files];if(!files.length){StarStore.savePending(null);return;}
-  try{if(files.reduce((n,f)=>n+f.size,0)>4*1024*1024)throw new Error(t('本次上传的附件合计最多 4 MB。'));const saved=await Promise.all(files.map(async f=>({name:f.name,type:f.type,data:await readFileData(f)})));if(!StarStore.savePending(saved)){StarStore.savePending(null);showError(t('无法保存临时会话，请检查浏览器存储空间。'));}}catch(e){showError(e.message);}
+  try{if(files.reduce((n,f)=>n+f.size,0)>4*1024*1024)throw new Error(t('本次上传的附件合计最多 4 MB。'));const saved=await Promise.all(files.map(async f=>({name:f.name,type:f.type,data:await readFileData(f)})));const currentFiles=[...$('inputFile').files];if(currentFiles.length!==files.length||currentFiles.some((file,i)=>file!==files[i]))return;if(!StarStore.savePending(saved)){StarStore.savePending(null);showError(t('无法保存临时会话，请检查浏览器存储空间。'));}}catch(e){showError(e.message);}
 });
 function restorePendingFile(){
   const saved=StarStore.loadPending();if(!saved.length)return;
-  try{const transfer=new DataTransfer();for(const item of saved){const [meta,body]=item.data.split(',');const raw=atob(body),bytes=Uint8Array.from(raw,c=>c.charCodeAt(0));transfer.items.add(new File([bytes],item.name,{type:item.type||meta.slice(5).split(';')[0]}));}$('inputFile').files=transfer.files;}catch{showError(t('无法恢复临时附件，请重新选择文件。'));}
+  try{const transfer=new DataTransfer();for(const item of saved){const [meta,body]=item.data.split(',');const raw=atob(body),bytes=Uint8Array.from(raw,c=>c.charCodeAt(0));transfer.items.add(new File([bytes],item.name,{type:item.type||meta.slice(5).split(';')[0]}));}$('inputFile').files=transfer.files;renderChatAttachments();}catch{showError(t('无法恢复临时附件，请重新选择文件。'));}
 }
 window.addEventListener('beforeunload',event=>{if(!accountEmail){persistHistory();if(StarStore.unloadNeedsWait()){event.preventDefault();event.returnValue='';}}});
 window.addEventListener('pagehide',()=>{persistHistory();StarStore.flushOnPagehide();});
@@ -129,7 +130,7 @@ document.addEventListener('starhub:languagechanged',()=>{
   // Dynamic reasoning options must not accumulate on repeated switches.
   for(const option of [...$('filterReasoning').options].slice(4))option.remove();
   setupLibrary();for(const id of filterIds)if([...$(id).options].some(o=>o.value===uiText(filters[id])))$(id).value=uiText(filters[id]);
-  updateConnection();refreshCurrentApi();refreshParameterConditions();renderBatches();
+  updateConnection();refreshCurrentApi();refreshParameterConditions();
   // Translate labels in place: files, keys, prompts and unsent settings remain untouched.
   translateInterface();refreshConnectionSummary();historySignature='';render();
   if($('modelLibrary').open)renderLibrary();if($('detailDialog').open)showDetails(catalog.models.find(m=>m.uid===detailModel.uid));

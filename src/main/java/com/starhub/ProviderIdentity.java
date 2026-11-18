@@ -16,10 +16,13 @@ final class ProviderIdentity {
         if(account instanceof Long id){
             String email=(String)session.getAttribute("starhub.account.email"),generation=(String)session.getAttribute("starhub.account.generation");Object raw=session.getAttribute("starhub.account.hash");
             if(!Objects.equals(expectedEmail,email)||generation==null||!(raw instanceof byte[]))throw new StorageFailure(401,"ACCOUNT_CHANGED","账户已更改，请先恢复原账户再查询操作。");byte[] hash=((byte[])raw).clone();
+            ProviderOperations.VerifyOwner completion=c->{
+                try(PreparedStatement q=c.prepareStatement("SELECT email,generation FROM users WHERE id=? AND active=1")){q.setLong(1,id);try(ResultSet r=q.executeQuery()){if(!r.next()||!email.equals(r.getString(1))||!generation.equals(r.getString(2)))throw changed();}}
+            };
             return new ProviderOperations.Owner("account:"+id+":"+generation+":"+tab,c->{
                 try{if(!Objects.equals(session.getAttribute("starhub.account.id"),id)||!Objects.equals(session.getAttribute("starhub.account.generation"),generation)||!Objects.equals(session.getAttribute("starhub.account.email"),email))throw changed();}catch(IllegalStateException expired){throw changed();}
                 try(PreparedStatement q=c.prepareStatement("SELECT password_hash,email,generation FROM users WHERE id=? AND active=1")){q.setLong(1,id);try(ResultSet r=q.executeQuery()){if(!r.next()||!MessageDigest.isEqual(hash,r.getBytes(1))||!email.equals(r.getString(2))||!generation.equals(r.getString(3)))throw changed();}}
-            });
+            },completion,files==null?()->{}:()->{FileStorage service=FileStorage.get();if(service.atomic!=files)throw StorageFailure.unavailable();AccountServlet.providerIdle(service,session,true);});
         }
         if(!expectedEmail.isBlank())throw changed();
         String identity=(String)session.getAttribute(GuestSessionServlet.IDENTITY);String operation=FileStorage.operationId(input.path("operationId").asText());

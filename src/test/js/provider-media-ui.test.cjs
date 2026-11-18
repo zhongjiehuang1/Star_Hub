@@ -4,6 +4,7 @@ const {test}=require('node:test'),assert=require('node:assert/strict');
 const fs=require('node:fs'),path=require('node:path'),vm=require('node:vm');
 const {webcrypto}=require('node:crypto');
 const providerMedia=require('../../main/webapp/provider-media.js');
+const imageIntent=require('../../main/webapp/image-intent.js');
 const web=path.join(__dirname,'../../main/webapp');
 const app=fs.readFileSync(path.join(web,'app.js'),'utf8');
 const cloud=fs.readFileSync(path.join(web,'cloud.js'),'utf8');
@@ -27,17 +28,18 @@ function fixture(options={}){
  const chat={id:'original-chat',title:'Original',messages:[]};
  const ctx={$: $,document:{addEventListener:(type,callback)=>events.set(type,callback)},messageViews:cachedViews,
   accountEmail:owner,accountIdentityRevision:0,current:chat,chats:[chat],ownerTab:'a'.repeat(32),
-  realtimeActive:false,cloudHydrating:false,cloudReady:true,ready:true,busy:false,publicInsecure:false,
-  queueRender(){},render(){},updateConnection(){},setBusy(value){ctx.busy=value;},showError:value=>{if(value)errors.push(value);},element,t:value=>value,uiText:value=>value,
-  selectedModel:()=>({inputs:['image'],referenceLimits:{image:4}}),providers:[{id:'synthetic',name:'Synthetic'}],
+  realtimeActive:false,cloudHydrating:false,cloudReady:true,ready:true,busy:false,publicInsecure:false,chatActivation:0,
+  queueRender(){},render(){},renderChatAttachments(){},updateConnection(){},setBusy(value){ctx.busy=value;},showError:value=>{if(value)errors.push(value);},element,t:value=>value,uiText:value=>value,
+  catalog:{models:[{id:'image-model',provider:'openai',categories:['image'],inputs:['text'],selectionTier:'flagship'}]},selectedModel:()=>({inputs:['image'],referenceLimits:{image:4}}),providers:[{id:'synthetic',name:'Synthetic'}],
   crypto:webcrypto,AbortController,performance:{now:()=>0},setInterval:()=>1,clearInterval(){},setTimeout:()=>2,clearTimeout(){},
-  providerRetries:new Map(),StarStore:{savePending(){}},saveCloudChats:async()=>{},persistProviderHistory:async()=>{},
+  providerRetries:new Map(),StarStore:{savePending(){},whenHydrated:async()=>{}},saveCloudChats:async()=>{},persistProviderHistory:async()=>{},
   readCloudFile:async()=>({url:'data:image/png;base64,AQID'}),
   StarProviderOperations:{prepare:async()=>({id:operation,fresh:true}),discardUnsent(){},observe(){},markUnknown(){},acknowledge(){return true;},
    requestPrepared:async()=>({response:new Response(JSON.stringify({operationId:operation,operationState:'COMPLETED',durability:'dual',text:'synthetic answer',media:[]}),{headers:{'Content-Type':'application/json'}})})},
-  ReplyReveal:class{constructor(message){this.message=message;}append(text){this.message.content+=text;}async finish(){}},
+  ReplyReveal:class{constructor(message){this.message=message;}append(text){this.message.content+=text;}showAll(){} async finish(){}},
+  StarVisuals:{instruction:'synthetic visual instruction'},StarImageIntent:imageIntent,
   collectParameters:async()=>({}),readInputFiles:async()=>['data:image/png;base64,AQID'],uploadSubmittedFiles:async()=>[id(10)]};
- const api=providerMedia.create({crypto:webcrypto,Blob,actor:()=>ctx.accountEmail,tab:()=>ctx.ownerTab,
+ const api=providerMedia.create({crypto:webcrypto,Blob,actor:()=>ctx.accountEmail,tab:()=>ctx.ownerTab,wait:async()=>{},
   URL:{createObjectURL(){const url='blob:synthetic-'+(++serial);created.push(url);return url;},revokeObjectURL:url=>revoked.push(url)},
   fetch:async(_url,request)=>{const body=JSON.parse(request.body);requests.push(body);return options.fetch?options.fetch(body,request):binary(body);}});
  ctx.StarProviderMedia=api;vm.createContext(ctx);
@@ -78,6 +80,16 @@ test('unchanged owner passes the real submission handler and stores a completed 
  assert.equal(f.chat.messages[1].content,'synthetic answer');assert.equal(f.chat.messages[1].incomplete,false);
 });
 
+test('unconfirmed requests point to request history without changing completed-result errors',async()=>{
+ const hint='请在侧栏的服务设置 → 请求记录中查看原请求。';
+ for(const state of ['UNKNOWN','SENT','COMPLETED','COMPLETED_NO_RESULT']){
+  const f=fixture();f.ctx.StarProviderOperations.records=()=>[{id:operation,state,archived:false}];
+  f.ctx.StarProviderOperations.requestPrepared=async()=>{const error=new Error('synthetic failure');if(state.startsWith('COMPLETED'))Object.assign(error,{operationId:operation,operationState:state});throw error;};
+  await f.submit();const message=f.errors.at(-1);assert.ok(message.includes('synthetic failure'));
+  assert.equal(message.includes(hint),!state.startsWith('COMPLETED'),state);
+ }
+});
+
 test('parallel messages publish only the latest preview and release a preceding preview',async()=>{
  const entered=deferred(),release=deferred();const f=fixture({fetch:async body=>{if(body.mediaId===id(2)){entered.resolve();await release.promise;}return binary(body);}});
  const first={providerOperationId:operation,mediaRefs:[reference(1)]},abandoned={providerOperationId:operation,mediaRefs:[reference(2)]},latest={providerOperationId:operation,mediaRefs:[reference(3)]};
@@ -95,7 +107,42 @@ test('actual chat activation A to B to A invalidates an awaiting image response'
  const message={providerOperationId:operation,mediaRefs:[reference(1)]};f.chat.messages=[message];const other={id:'other',messages:[]};
  const pending=f.ctx.displayGeneratedPreview(message,f.chat,owner);await entered.promise;
  f.ctx.activateChat(other);f.ctx.activateChat(f.chat);release.resolve();await pending;
- assert.equal(f.ctx.current,f.chat);assert.equal(f.created.length,0);assert.equal((message.media||[]).length,0);assert.equal(message.mediaLoading,false);
+ await settle(()=>message.media?.length===1);
+ assert.equal(f.ctx.current,f.chat);assert.equal(f.requests.length,2);assert.equal(f.created.length,1);assert.equal(f.api.owns(message.media[0].url),true);assert.equal(message.mediaLoading,false);
+});
+
+test('activating a saved conversation automatically loads its latest image only',async()=>{
+ const f=fixture(),older={providerOperationId:operation,mediaRefs:[reference(1)]},latest={providerOperationId:operation,mediaRefs:[reference(2)]};f.chat.messages=[older,latest];
+ f.ctx.activateChat(f.chat);await settle(()=>latest.media?.length===1);
+ assert.equal(f.requests.length,1);assert.equal(f.requests[0].mediaId,reference(2).fileId);assert.equal(older.media,undefined);
+});
+
+test('automatic preview does not retry a failed read or cross an account change',async()=>{
+ const f=fixture({fetch:async()=>{throw Error('unavailable');}}),message={providerOperationId:operation,mediaRefs:[reference(1)]};f.chat.messages=[message];
+ f.ctx.activateChat(f.chat);await settle(()=>message.imageUnavailable===true);await new Promise(resolve=>setImmediate(resolve));assert.equal(f.requests.length,1);
+ const other=fixture(),saved={providerOperationId:operation,mediaRefs:[reference(2)]};other.chat.messages=[saved];other.ctx.activateChat(other.chat);other.change('ABA');await new Promise(resolve=>setImmediate(resolve));assert.equal(other.requests.length,0);
+});
+
+test('busy and missing images receive distinct preview states without implying deletion',async()=>{
+ for(const [status,code,expected] of [[429,'PROVIDER_BUSY','busy'],[404,'FILE_NOT_FOUND','missing'],[503,'UNAVAILABLE','unavailable']]){
+  const f=fixture({fetch:async()=>new Response(JSON.stringify({code}),{status,headers:{'Content-Type':'application/json','Retry-After':'1'}})}),message={providerOperationId:operation,mediaRefs:[reference(1)]};f.chat.messages=[message];
+  await f.ctx.displayGeneratedPreview(message,f.chat,owner);assert.equal(message.imageUnavailable,true);assert.equal(message.imageUnavailableReason,expected);assert.equal(f.requests.length,status===429?3:1);
+ }
+});
+
+test('automatic preview waits for account conversation hydration',async()=>{
+ const f=fixture(),gate=deferred(),message={providerOperationId:operation,mediaRefs:[reference(3)]};f.chat.messages=[message];f.chat.hydrated=false;
+ f.ctx.hydrateChat=async chat=>{await gate.promise;chat.hydrated=true;};f.ctx.activateChat(f.chat);await new Promise(resolve=>setImmediate(resolve));assert.equal(f.requests.length,0);
+ gate.resolve();await settle(()=>message.media?.length===1);assert.equal(f.requests.length,1);assert.equal(f.requests[0].mediaId,reference(3).fileId);
+});
+
+test('automatic preview waits for guest hydration and rechecks its account and activation',async()=>{
+ const gate=deferred(),f=fixture(),message={providerOperationId:operation,mediaRefs:[reference(3)]};f.chat.messages=[message];f.ctx.StarStore.whenHydrated=()=>gate.promise;
+ f.ctx.activateChat(f.chat);await new Promise(resolve=>setImmediate(resolve));assert.equal(f.requests.length,0);
+ gate.resolve();await settle(()=>message.media?.length===1);assert.equal(f.requests.length,1);
+ const next=deferred(),g=fixture(),saved={providerOperationId:operation,mediaRefs:[reference(4)]};g.chat.messages=[saved];g.ctx.StarStore.whenHydrated=()=>next.promise;
+ g.ctx.activateChat(g.chat);await new Promise(resolve=>setImmediate(resolve));g.change('ABA');next.resolve();await new Promise(resolve=>setImmediate(resolve));assert.equal(g.requests.length,0);
+ const h=fixture(),last={providerOperationId:operation,mediaRefs:[reference(5)]};h.chat.messages=[last];h.ctx.StarStore.whenHydrated=async()=>{throw Error('unconfirmed');};h.ctx.activateChat(h.chat);await new Promise(resolve=>setImmediate(resolve));assert.equal(h.requests.length,0);
 });
 
 test('same completed operation queried again releases its old Blob before replacing media',async()=>{
@@ -210,4 +257,163 @@ test('single database success does not invent a degraded warning and preserves p
   const f=fixture();f.ctx.StarProviderOperations.requestPrepared=async()=>({response:new Response(JSON.stringify({operationId:operation,operationState:'COMPLETED',durability:'single',text:'synthetic answer',warning}),{headers:{'Content-Type':'application/json'}})});
   await f.submit();assert.equal(f.chat.messages[1].warning,warning);assert.equal(f.chat.messages[1].content,'synthetic answer');
  }
+});
+
+test('completed answer is durably saved before visual reveal finishes',async()=>{
+ const f=fixture(),hold=deferred();let finalSave,ack=0;
+ f.ctx.ReplyReveal=class{constructor(message){this.message=message;message.revealing=true}append(text){this.message.content+=text}showAll(){}async finish(){await hold.promise;this.message.revealing=false}};
+ f.ctx.persistProviderHistory=async()=>{if(f.chat.messages[1]?.content)finalSave={content:f.chat.messages[1].content,incomplete:f.chat.messages[1].incomplete,revealing:f.chat.messages[1].revealing}};
+ f.ctx.StarProviderOperations.acknowledge=()=>{ack++;return true};const pending=f.submit();await settle(()=>ack===1);
+ assert.deepEqual(finalSave,{content:'synthetic answer',incomplete:false,revealing:true});hold.resolve();await pending;
+});
+
+test('explicit image request uses the selected OpenAI key and durable image operation',async()=>{
+ const f=fixture();f.$('prompt').value='生成一张女孩图';f.$('provider').value='openai';f.$('model').value='chat-model';f.$('inputFile').files=[];f.ctx.providers=[{id:'openai',name:'OpenAI'}];f.ctx.readInputFiles=async()=>[];
+ let payload;f.ctx.StarProviderOperations.prepare=async(_kind,body)=>{payload=body;return{id:operation};};
+ await f.submit();assert.equal(payload.task,'image');assert.equal(payload.model,'image-model');assert.equal(payload.apiKey,'synthetic-placeholder');assert.equal(payload.stream,false);assert.equal(payload.webSearch,false);assert.deepEqual(Object.keys(payload.parameters),[]);assert.equal(f.chat.messages[1].model,'image-model');assert.equal(f.chat.messages[1].providerOperationId,operation);
+});
+test('image requests do not send another provider key or unsupported image attachments',async()=>{
+ for(const scenario of ['provider','attachment']){const f=fixture();f.$('prompt').value='生成一张女孩图';let dispatched=false;f.ctx.StarProviderOperations.prepare=async()=>{dispatched=true;return{id:operation};};
+  if(scenario==='attachment'){f.$('provider').value='openai';f.ctx.providers=[{id:'openai',name:'OpenAI'}];}
+  await f.submit();assert.equal(dispatched,false);assert.equal(f.chat.messages.length,0);assert.ok(f.errors.length);
+ }
+});
+
+function imageFollowupFixture(){
+ const f=fixture();f.$('provider').value='openai';f.$('model').value='chat-model';f.$('inputFile').files=[];
+ f.ctx.providers=[{id:'openai',name:'OpenAI'}];f.ctx.readInputFiles=async()=>[];
+ const sourceOperation=id(90);f.chat.messages=[{role:'user',content:'画一个穿紫色裙子的女孩'},
+  {role:'assistant',content:'Image generated.',providerOperationId:sourceOperation,mediaRefs:[reference(91)]}];
+ let payload,dispatches=0;f.ctx.StarProviderOperations.prepare=async(_kind,body)=>{payload=body;return{id:operation};};
+ const send=f.ctx.StarProviderOperations.requestPrepared;f.ctx.StarProviderOperations.requestPrepared=async(...args)=>{dispatches++;return send(...args);};
+ return {...f,sourceOperation,payload:()=>payload,dispatches:()=>dispatches};
+}
+
+test('follow-up variation retains the preceding image description and creates exactly one new operation',async()=>{
+ const f=imageFollowupFixture();f.$('prompt').value='再生成一张';await f.submit();
+ const body=f.payload();assert.equal(body.task,'image');assert.equal(body.model,'image-model');assert.equal(body.imageEdit,undefined);
+ assert.match(body.prompt,/画一个穿紫色裙子的女孩/);assert.match(body.prompt,/再生成一张/);assert.equal(f.requests.length,0);assert.equal(f.dispatches(),1);
+ assert.equal(f.chat.messages.at(-2).content,'再生成一张');assert.equal(f.chat.messages.at(-1).providerOperationId,operation);
+});
+
+test('an image edit reads the source with its original operation and then dispatches one edit',async()=>{
+ const f=imageFollowupFixture();f.$('prompt').value='把背景改成蓝色';let converted=0;
+ f.ctx.StarImageEditInput={prepare:async(url,{blob,owns,active})=>{converted++;assert.ok(owns(url));assert.equal(active(),true);assert.equal(blob instanceof Blob,true);assert.equal(f.api.blobFor(url),blob);assert.equal(blob.size,3);return {dataUrl:'data:image/png;base64,AQID'};}};
+ await f.submit();const body=f.payload();assert.equal(f.requests.length,1);assert.equal(f.requests[0].operationId,f.sourceOperation);assert.equal(f.requests[0].mediaId,id(91));
+ assert.equal(f.requests[0].expectedEmail,owner);assert.equal(converted,1);assert.equal(body.imageEdit,true);assert.equal(body.file,'data:image/png;base64,AQID');assert.match(body.prompt,/把背景改成蓝色/);
+ assert.equal(f.dispatches(),1);assert.ok(f.revoked.includes('blob:synthetic-1'));
+});
+
+test('an attached image wins over a previous generated image when editing',async()=>{
+ const f=imageFollowupFixture();f.$('prompt').value='把背景改成蓝色';f.$('inputFile').files=[{name:'new.png'}];f.ctx.readInputFiles=async()=>['data:image/png;base64,BAUG'];
+ f.ctx.StarImageEditInput={prepare:async()=>{throw Error('The previous image must not be read');}};
+ await f.submit();assert.equal(f.requests.length,0);assert.equal(f.payload().file,'data:image/png;base64,BAUG');assert.equal(f.payload().imageEdit,true);
+ assert.doesNotMatch(f.payload().prompt,/穿紫色裙子的女孩/);assert.equal(f.dispatches(),1);
+});
+
+test('missing or unreadable source image cannot create or dispatch a paid operation',async()=>{
+ for(const mode of ['missing','unreadable']){
+  const f=imageFollowupFixture();if(mode==='missing')f.chat.messages=[];else{f.chat.messages[1].providerOperationId='';f.ctx.readCloudFile=async()=>{throw Error('file unavailable');};}
+  f.$('prompt').value=mode==='missing'?'再生成一张':'把背景改成蓝色';await f.submit();
+  assert.equal(f.payload(),undefined);assert.equal(f.dispatches(),0);assert.equal(f.requests.length,0);assert.ok(f.errors.length);
+ }
+});
+
+test('legacy account image is read under the original owner and its temporary URL is released',async()=>{
+ const f=imageFollowupFixture(),created=[],released=[];f.chat.messages[1].providerOperationId='';f.$('prompt').value='把背景改成蓝色';
+ f.ctx.readCloudFile=async fileId=>{assert.equal(fileId,id(91));assert.equal(f.ctx.accountEmail,owner);return {url:'data:image/png;base64,AQID'};};
+ f.ctx.fetch=async()=>{throw Error('Data and blob URLs must never be fetched under CSP');};
+ f.ctx.URL={createObjectURL(blob){assert.equal(blob.type,'image/png');created.push('blob:legacy');return 'blob:legacy';},revokeObjectURL:url=>released.push(url)};
+ f.ctx.StarImageEditInput={fromDataUrl:url=>{assert.equal(url,'data:image/png;base64,AQID');return new Blob([new Uint8Array([1,2,3])],{type:'image/png'});},prepare:async(url,{blob,owns,active})=>{assert.equal(url,'blob:legacy');assert.equal(blob instanceof Blob,true);assert.equal(blob.size,3);assert.equal(owns(url),true);assert.equal(owns('blob:other'),false);assert.equal(active(),true);return {dataUrl:'data:image/png;base64,AQID'};}};
+ await f.submit();assert.deepEqual(created,['blob:legacy']);assert.deepEqual(released,['blob:legacy']);assert.equal(f.requests.length,0);
+ assert.equal(f.payload().imageEdit,true);assert.equal(f.payload().file,'data:image/png;base64,AQID');assert.equal(f.dispatches(),1);
+});
+
+test('legacy image editing is denied without its account or for ambiguous and invalid references',async()=>{
+ for(const mode of ['guest','multi','unsupported']){
+  const f=imageFollowupFixture();f.chat.messages[1].providerOperationId='';f.$('prompt').value='把背景改成蓝色';let reads=0;
+  if(mode==='guest')f.ctx.accountEmail='';if(mode==='multi')f.chat.messages[1].mediaRefs=[reference(91),reference(92)];
+  f.ctx.readCloudFile=async()=>{reads++;return {url:'data:text/plain;base64,AQID'};};
+  f.ctx.fetch=async()=>{throw Error('Must not fetch invalid data');};f.ctx.StarImageEditInput={fromDataUrl:()=>{throw Error('invalid data URL');},prepare:async()=>{throw Error('Must not convert');}};
+  await f.submit();assert.equal(reads,mode==='unsupported'?1:0,mode);assert.equal(f.payload(),undefined,mode);assert.equal(f.dispatches(),0,mode);assert.ok(f.errors.length,mode);
+ }
+});
+
+test('account ABA during legacy file read cannot prepare a paid operation',async()=>{
+ const entered=deferred(),release=deferred(),f=imageFollowupFixture();f.chat.messages[1].providerOperationId='';f.$('prompt').value='把背景改成蓝色';let fetches=0;
+ f.ctx.readCloudFile=async()=>{entered.resolve();await release.promise;return {url:'data:image/png;base64,AQID'};};f.ctx.fetch=async()=>{fetches++;throw Error('Must not fetch stale data');};
+ const pending=f.submit();await entered.promise;f.change('ABA');release.resolve();await pending;
+ assert.equal(fetches,0);assert.equal(f.payload(),undefined);assert.equal(f.dispatches(),0);assert.equal(f.chat.messages.length,2);assert.ok(f.errors.length);
+});
+
+test('account ABA during legacy conversion releases the temporary URL and stops dispatch',async()=>{
+ const entered=deferred(),release=deferred(),f=imageFollowupFixture(),released=[];f.chat.messages[1].providerOperationId='';f.$('prompt').value='把背景改成蓝色';
+ f.ctx.readCloudFile=async()=>({url:'data:image/png;base64,AQID'});f.ctx.fetch=async()=>{throw Error('Data and blob URLs must never be fetched under CSP');};
+ f.ctx.URL={createObjectURL:()=> 'blob:legacy',revokeObjectURL:url=>released.push(url)};
+ f.ctx.StarImageEditInput={fromDataUrl:()=>new Blob([new Uint8Array([1,2,3])],{type:'image/png'}),prepare:async(_url,{blob,active})=>{assert.equal(blob instanceof Blob,true);entered.resolve();await release.promise;assert.equal(active(),false);return {dataUrl:'data:image/png;base64,AQID'};}};
+ const pending=f.submit();await entered.promise;f.change('ABA');release.resolve();await pending;
+ assert.deepEqual(released,['blob:legacy']);assert.equal(f.payload(),undefined);assert.equal(f.dispatches(),0);assert.ok(f.errors.length);
+});
+
+test('authenticated image reads expose Blob bytes only for explicit editing',async()=>{
+ const f=imageFollowupFixture(),referenceList=[reference(91)];
+ const preview=await f.api.hydrate(referenceList,{operationId:f.sourceOperation,expectedEmail:owner});
+ assert.equal('blob' in preview[0],false);assert.equal(f.api.owns(preview[0].url),true);const previewUrl=preview[0].url;assert.equal(f.api.blobFor(previewUrl) instanceof Blob,true);f.api.release(preview);assert.equal(f.api.blobFor(previewUrl),undefined);
+ const edit=await f.api.hydrate(referenceList,{operationId:f.sourceOperation,expectedEmail:owner,includeBlob:true});
+ assert.equal(edit[0].blob instanceof Blob,true);assert.equal(f.api.blobFor(edit[0].url),edit[0].blob);assert.deepEqual([...new Uint8Array(await edit[0].blob.arrayBuffer())],[1,2,3]);
+ const url=edit[0].url;f.api.release(edit);assert.equal(f.api.owns(url),false);assert.equal(f.api.blobFor(url),undefined);assert.ok(f.revoked.includes(url));
+});
+
+test('an account ABA while reading the original image cannot create or dispatch a paid operation',async()=>{
+ const entered=deferred(),release=deferred(),f=imageFollowupFixture();f.$('prompt').value='把背景改成蓝色';
+ f.ctx.StarImageEditInput={prepare:async()=>{throw Error('The stale image must not be converted');}};
+ const hydrate=f.ctx.StarProviderMedia.hydrate;f.ctx.StarProviderMedia.hydrate=async(...args)=>{entered.resolve();await release.promise;return hydrate(...args);};
+ const pending=f.submit();await entered.promise;f.change('ABA');release.resolve();await pending;
+ assert.equal(f.payload(),undefined);assert.equal(f.dispatches(),0);assert.equal(f.chat.messages.length,2);assert.ok(f.errors.length);
+});
+
+test('image-model mode follows conversation context while retaining the chosen model and settings',async()=>{
+ for(const mode of ['variation','edit']){
+  const f=imageFollowupFixture();f.$('task').value='image';f.$('model').value='chosen-image';
+  f.$('prompt').value=mode==='variation'?'再生成一张':'把背景改成蓝色';
+  f.ctx.selectedModel=()=>({id:'chosen-image',provider:'openai',inputs:['text','image'],referenceLimits:{image:1}});
+  f.ctx.collectParameters=async()=>({quality:'high',size:'1024x1024'});
+  f.ctx.StarImageEditInput={prepare:async()=>({dataUrl:'data:image/png;base64,AQID'})};await f.submit();
+  assert.equal(f.payload().model,'chosen-image');assert.equal(f.payload().parameters.quality,'high');assert.equal(f.payload().parameters.size,'1024x1024');
+  assert.equal(f.payload().imageEdit,mode==='edit'?true:undefined);assert.equal(f.dispatches(),1);
+ }
+});
+
+test('image-model edits enforce one output before any source read or paid dispatch',async()=>{
+ for(const source of ['history','attachment']){
+  const f=imageFollowupFixture();f.$('task').value='image';f.$('model').value='chosen-image';f.$('prompt').value='把背景改成蓝色';
+  f.ctx.selectedModel=()=>({id:'chosen-image',provider:'openai',inputs:['text','image'],referenceLimits:{image:1}});
+  f.ctx.collectParameters=async()=>({n:2});if(source==='attachment'){f.$('inputFile').files=[{name:'reference.png'}];f.ctx.readInputFiles=async()=>['data:image/png;base64,AQID'];}
+  f.ctx.StarImageEditInput={prepare:async()=>{throw Error('Must not prepare when n exceeds one');}};await f.submit();
+  assert.equal(f.payload(),undefined,source);assert.equal(f.dispatches(),0,source);assert.equal(f.requests.length,0,source);
+  assert.ok(f.errors.some(error=>String(error).includes('只能生成一张')),source);
+ }
+});
+
+test('image-model edits accept one output and variations retain multiple-output settings',async()=>{
+ for(const [intent,n] of [['edit',1],['variation',2]]){
+  const f=imageFollowupFixture();f.$('task').value='image';f.$('model').value='chosen-image';f.$('prompt').value=intent==='edit'?'把背景改成蓝色':'再生成一张';
+  f.ctx.selectedModel=()=>({id:'chosen-image',provider:'openai',inputs:['text','image'],referenceLimits:{image:1}});
+  f.ctx.collectParameters=async()=>({n});f.ctx.StarImageEditInput={prepare:async()=>({dataUrl:'data:image/png;base64,AQID'})};await f.submit();
+  assert.equal(f.payload().parameters.n,n);assert.equal(Boolean(f.payload().imageEdit),intent==='edit');assert.equal(f.dispatches(),1);
+ }
+});
+
+test('an ambiguous multi-image source is never silently chosen for an edit',async()=>{
+ const f=imageFollowupFixture();f.chat.messages[1].mediaRefs=[reference(91),reference(92)];f.$('prompt').value='把背景改成蓝色';
+ f.ctx.StarImageEditInput={prepare:async()=>({dataUrl:'data:image/png;base64,AQID'})};await f.submit();
+ assert.equal(f.payload(),undefined);assert.equal(f.requests.length,0);assert.equal(f.dispatches(),0);assert.ok(f.errors.length);
+});
+
+test('explicit image-model mode rejects unsupported references for a new image',async()=>{
+ const f=fixture();f.$('provider').value='openai';f.$('task').value='image';f.$('model').value='chosen-image';f.$('prompt').value='生成一张女孩图';
+ f.ctx.providers=[{id:'openai',name:'OpenAI'}];f.ctx.selectedModel=()=>({id:'chosen-image',provider:'openai',inputs:['text','image'],referenceLimits:{image:1}});
+ f.$('inputFile').files=[{name:'reference.png'}];f.ctx.readInputFiles=async()=>['data:image/png;base64,AQID'];
+ let body;f.ctx.StarProviderOperations.prepare=async(_kind,payload)=>{body=payload;return {id:operation};};await f.submit();
+ assert.equal(body,undefined);assert.ok(f.errors.length);
 });

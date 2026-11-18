@@ -41,6 +41,28 @@ public final class WorkspaceServlet extends HttpServlet {
    if(segmentedFileAction(req,res,user,body,action))return;
    try(Connection c=AccountServlet.db(AccountServlet.config())){
    ObjectNode out=ModelGateway.JSON.createObjectNode();
+   if(Set.of("listMemories","setMemoryEnabled","deleteMemory","editMemory","saveLocalMemory","saveSemanticMemory").contains(action)){
+    String generation=(String)session.getAttribute("starhub.account.generation");
+    byte[] key;try{key=Base64.getDecoder().decode(AccountServlet.config().getProperty("vault.key",""));}catch(IllegalArgumentException invalid){throw StorageFailure.unavailable();}
+    if(action.equals("listMemories")){send(res,200,AccountMemories.state(c,user,generation,key));return;}
+    if(!body.path("memoryRevision").isIntegralNumber()||!body.path("memoryRevision").canConvertToLong())throw new StorageFailure(400,"INVALID_MEMORY","记忆版本无效。");
+    long revision=body.path("memoryRevision").longValue();
+    if(action.equals("setMemoryEnabled")){if(!body.path("enabled").isBoolean())throw new StorageFailure(400,"INVALID_MEMORY","记忆设置无效。");send(res,200,AccountMemories.setEnabled(c,user,generation,revision,body.path("enabled").booleanValue()));return;}
+    if(action.equals("deleteMemory")){send(res,200,AccountMemories.delete(c,user,generation,revision,body.path("memoryId").asText()));return;}
+    if(action.equals("editMemory")){send(res,200,AccountMemories.edit(c,user,generation,revision,body.path("memoryId").asText(),body.path("text").asText(),key));return;}
+    if(action.equals("saveSemanticMemory")){
+     JsonNode original=body.path("extraction");if(!original.isObject()||!Objects.equals(body.path("expectedEmail").asText(),original.path("expectedEmail").asText())||original.path("memoryRevision").asLong(-1)!=revision)throw new StorageFailure(400,"INVALID_MEMORY","记忆提取请求无效。");
+     AccountMemories.requireEnabledRevision(c,user,generation,revision);SemanticMemorySource.require(c,user,generation,original);
+     FileStorage service=FileStorage.get();if(service.atomic==null)throw StorageFailure.unavailable();
+     ProviderOperations.Owner principal=ProviderIdentity.from(session,original,service.atomic);
+     var receipt=service.atomic.providers.completedBound(c,principal,original.path("operationId").asText(),"/memory-extract::chat",original);
+     String proposed=receipt.result().path("text").asText();if(proposed.length()>8192)throw new StorageFailure(400,"INVALID_MEMORY","记忆提取结果无效。");
+     send(res,200,AccountMemories.saveSemantic(c,user,generation,revision,original.path("text").asText(),proposed,key));return;
+    }
+    // This local extractor accepts only a narrow set of direct preference/name
+    // statements. No model or connector content is read by this path.
+    send(res,200,AccountMemories.save(c,user,generation,revision,MemoryExtractor.extract(body.path("text").asText()),key));return;
+   }
    if(action.equals("listChats")){send(res,200,ConversationPages.load(c,user,(String)session.getAttribute("starhub.account.generation"),body));return;}
    if(action.equals("saveChat")){
     String id=body.path("id").asText(),title=body.path("title").asText(),payload=body.path("data").toString();long revision=body.path("revision").asLong(0);
@@ -53,6 +75,10 @@ public final class WorkspaceServlet extends HttpServlet {
     else{try(PreparedStatement q=c.prepareStatement("UPDATE conversations SET title=?,payload=?,revision=revision+1 WHERE user_id=? AND chat_id=? AND revision=?")){q.setString(1,title);q.setString(2,payload);q.setLong(3,user);q.setString(4,id);q.setLong(5,revision);if(q.executeUpdate()!=1){fail(res,409,"聊天记录已在其他页面更改，请重新加载。");return;}}out.put("revision",revision+1);}send(res,200,out);return;
    }
    if(action.equals("deleteChat")){try(PreparedStatement q=c.prepareStatement("DELETE FROM conversations WHERE user_id=? AND chat_id=? AND revision=?")){q.setLong(1,user);q.setString(2,body.path("id").asText());q.setLong(3,body.path("revision").asLong());if(q.executeUpdate()!=1){fail(res,409,"聊天记录已更改，请重新加载。");return;}}send(res,200,out.put("ok",true));return;}
+   if(Set.of("createFolder","renameFolder","deleteFolder","moveFile").contains(action)){
+    String generation=FileStorage.lockUser(c,user);if(!Objects.equals(generation,session.getAttribute("starhub.account.generation")))throw StorageFailure.unavailable();
+    send(res,200,LibraryFolders.apply(c,user,generation,action,body));return;
+   }
    if(action.equals("listFiles")){send(res,200,FileStorage.get().list(user,body));return;}
    if(action.equals("reserveUpload")){
     JsonNode files=body.path("files");if(!files.isArray()||files.size()!=1||!files.get(0).path("size").isIntegralNumber()||files.get(0).path("size").asLong()>FILE_MAX){fail(res,400,"每次普通上传仅支持一个不超过 4 MiB 的文件。");return;}

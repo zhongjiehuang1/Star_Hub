@@ -67,7 +67,7 @@ class AtomicTransactionsTest {
                 q.execute("CREATE TABLE starhub_login_status_limits(identity_hash BINARY(32) PRIMARY KEY,window_start_millis BIGINT,requests INT)");
                 q.execute("CREATE TABLE starhub_provider_operations(operation_id CHAR(36) PRIMARY KEY,owner_hash BINARY(32),request_hash BINARY(32),kind VARCHAR(120),state VARCHAR(32),account_user_id BIGINT,account_generation CHAR(36),image_budget_bytes BIGINT DEFAULT 0,logical_reserved BIGINT DEFAULT 0,dispatch_hash BINARY(32),reserved_view VARCHAR(200),response_status SMALLINT,result_cipher BLOB,created_millis BIGINT,updated_millis BIGINT)");
                 q.execute("CREATE TABLE starhub_provider_capacity(operation_id CHAR(36),node_id TINYINT,reserved_bytes BIGINT,PRIMARY KEY(operation_id,node_id))");
-                for(String migration:List.of("010_atomic_guest_sessions.sql","012_chunked_payload_store.sql","013_chunked_business_manifests.sql")){
+                for(String migration:List.of("010_atomic_guest_sessions.sql","012_chunked_payload_store.sql","013_chunked_business_manifests.sql","014_library_folders.sql","015_account_display_name.sql","018_account_memory.sql")){
                     StringBuilder ddl=new StringBuilder();for(String line:Files.readString(Path.of("deploy/migrations/"+migration)).split("\n"))if(!line.stripLeading().startsWith("--"))ddl.append(line).append('\n');for(String statement:ddl.toString().split(";"))if(!statement.isBlank())q.execute(statement.replace("ENGINE=InnoDB",""));
                 }
                 q.execute("CREATE TABLE business(id INT PRIMARY KEY,value_text VARCHAR(100))");q.execute("CREATE TABLE b.business(id INT PRIMARY KEY,value_text VARCHAR(100))");

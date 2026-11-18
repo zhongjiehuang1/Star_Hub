@@ -52,6 +52,16 @@ class WorkspaceMutationBudgetTest {
             f.availableBytes.set(StorageCluster.FLOOR+1);assertEquals(text,f.db.run(op,c->AtomicHttp.result(c,1,f.generation,op)).path("result").path("text").asText());var replay=new AtomicTransactionsTest.Capture();AtomicHttp.run(request(f,input),replay.response,(a,b)->fail("Committed replay repeated mutation"),f.db,f.p,()->{},(c,n)->fail("Committed replay must not reserve new mutation bytes"));assertEquals(200,replay.status.get());assertArrayEquals(old,replay.bytes.toByteArray());
         }
     }
+    @Test void folderMutationIsAdmittedBeforeWritesAndCommittedReplayDoesNotRepeat()throws Exception {
+        try(var f=new AtomicTransactionsTest.Fixture();var cfg=new Config(f)){
+            String op=UUID.randomUUID().toString();var input=ModelGateway.JSON.createObjectNode().put("action","createFolder").put("name","Projects").put("operationId",op).put("expectedEmail","user@example.test");var observed=new AtomicLong();
+            FilterChain handler=(request,response)->{try(Connection c=AccountServlet.db(f.p)){String generation=FileStorage.lockUser(c,1);var out=LibraryFolders.apply(c,1,generation,"createFolder",input);response.setContentType("application/json");response.getOutputStream().write(ModelGateway.JSON.writeValueAsBytes(out));}catch(Exception e){throw new ServletException(e);}};
+            f.availableBytes.set(StorageCluster.FLOOR+1);var refused=new AtomicTransactionsTest.Capture();AtomicHttp.run(request(f,input),refused.response,handler,f.db,f.p,()->{},(c,n)->{observed.set(n);f.files.transientCapacity(c,n);});
+            assertEquals(507,refused.status.get());assertEquals(0,f.count("SELECT COUNT(*) FROM starhub_library_folders"));assertEquals(0,f.count("SELECT COUNT(*) FROM starhub_request_results"));assertEquals(AtomicHttp.MAX_MUTATION_RECEIPT_ROW_BYTES+8192,observed.get());
+            f.availableBytes.set(50_000_000_000L);var created=new AtomicTransactionsTest.Capture();AtomicHttp.run(request(f,input),created.response,handler,f.db,f.p,()->{},f.files::transientCapacity);assertEquals(200,created.status.get());assertEquals(1,f.count("SELECT COUNT(*) FROM starhub_library_folders"));assertEquals(1,f.count("SELECT COUNT(*) FROM starhub_request_results"));
+            var replay=new AtomicTransactionsTest.Capture();AtomicHttp.run(request(f,input),replay.response,(a,b)->fail("Replay entered mutation"),f.db,f.p,()->{},(c,n)->fail("Replay should not reserve twice"));assertEquals(200,replay.status.get());assertEquals(1,f.count("SELECT COUNT(*) FROM starhub_library_folders"));
+        }
+    }
     @Test void uncalibratedLegacyFileMutationKeepsBytesQuotaAndReadableContent()throws Exception {
         try(var f=new AtomicTransactionsTest.Fixture();var cfg=new Config(f)){
             f.files.list(1,ModelGateway.JSON.createObjectNode());String id=UUID.randomUUID().toString();byte[] data=new byte[4096];new Random(9).nextBytes(data);

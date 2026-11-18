@@ -5,7 +5,7 @@ const sha=async bytes=>Buffer.from(await webcrypto.subtle.digest('SHA-256',bytes
 function fixture(options={}){
  let owner='owner@example.test',ownerTab=tab,created=0;const revoked=[],bodies=[];
  const data=options.data||new Uint8Array([1,2,3]);
- const api=create({crypto:options.crypto||webcrypto,Blob,URL:{createObjectURL:()=>`blob:synthetic-${++created}`,revokeObjectURL:url=>revoked.push(url)},actor:()=>owner,tab:()=>ownerTab,fetch:async(url,request)=>{
+ const api=create({crypto:options.crypto||webcrypto,Blob,URL:{createObjectURL:()=>`blob:synthetic-${++created}`,revokeObjectURL:url=>revoked.push(url)},actor:()=>owner,tab:()=>ownerTab,wait:options.wait,fetch:async(url,request)=>{
   bodies.push(JSON.parse(request.body));if(options.fetch)return options.fetch(url,request);
   const headers={'Content-Type':'image/png','Content-Length':String(data.length),'X-Content-SHA256':await sha(data),'X-Starhub-Operation-ID':operation,'X-Starhub-Operation-State':'COMPLETED','X-Four-Project-Durability':'dual',...options.headers};
   return new Response(data,{status:200,headers});
@@ -13,6 +13,33 @@ function fixture(options={}){
  return {api,bodies,revoked,created:()=>created,owner:value=>owner=value,tab:value=>ownerTab=value};
 }
 const ref={type:'image',mime:'image/png',fileId:file},context={operationId:operation,expectedEmail:'owner@example.test'};
+function busy(code='PROVIDER_BUSY',retryAfter='1'){return new Response(JSON.stringify({code}),{status:429,headers:{'Content-Type':'application/json',...(retryAfter===null?{}:{'Retry-After':retryAfter})}});}
+async function validImage(){const data=new Uint8Array([1,2,3]);return new Response(data,{headers:{'Content-Type':'image/png','Content-Length':'3','X-Content-SHA256':await sha(data),'X-Starhub-Operation-ID':operation,'X-Starhub-Operation-State':'COMPLETED','X-Four-Project-Durability':'single'}});}
+test('busy image reads retry with the exact original identity and still verify image bytes',async()=>{
+ let count=0;const delays=[],f=fixture({fetch:async()=>++count<=2?busy():validImage(),wait:async delay=>delays.push(delay)});
+ const images=await f.api.hydrate([ref],context);assert.equal(images.length,1);assert.deepEqual(delays,[1000,1000]);assert.equal(f.bodies.length,3);assert.deepEqual(f.bodies[1],f.bodies[0]);assert.deepEqual(f.bodies[2],f.bodies[0]);
+});
+test('only confirmed busy image reads retry, with a strict bound and clear failure reasons',async()=>{
+ for(const [response,expected] of [[()=>busy(),'busy'],[()=>busy('MEMORY_BUSY'),'busy'],[()=>busy('PROVIDER_MEDIA_BUSY','0'),'busy'],[()=>busy('OTHER'),'unavailable'],[()=>new Response('{}',{status:503,headers:{'Content-Type':'application/json'}}),'unavailable'],[()=>new Response(JSON.stringify({code:'FILE_NOT_FOUND'}),{status:404,headers:{'Content-Type':'application/json'}}),'missing']]){
+  const f=fixture({fetch:async()=>response(),wait:async()=>{}});await assert.rejects(f.api.hydrate([ref],context),error=>error.previewStatus===expected);
+  assert.equal(f.bodies.length,expected==='busy'&&f.bodies[0]&&['PROVIDER_BUSY','MEMORY_BUSY'].includes((await response().json()).code)?3:1);
+ }
+});
+test('a confirmed busy response without Retry-After uses the bounded one-second default',async()=>{
+ let count=0;const delays=[],f=fixture({fetch:async()=>++count===1?busy('PROVIDER_MEDIA_BUSY',null):validImage(),wait:async delay=>delays.push(delay)});
+ const images=await f.api.hydrate([ref],context);assert.equal(images.length,1);assert.deepEqual(delays,[1000]);assert.equal(f.bodies.length,2);assert.deepEqual(f.bodies[1],f.bodies[0]);
+ for(const invalid of ['', '0','4','999999']){const noRetry=fixture({fetch:async()=>busy('PROVIDER_MEDIA_BUSY',invalid),wait:async()=>{throw Error('must not wait')}});await assert.rejects(noRetry.api.hydrate([ref],context),e=>e.previewStatus==='busy');assert.equal(noRetry.bodies.length,1);}
+});
+test('changing the owner or invalidating during retry stops before another image request',async()=>{
+ for(const change of ['owner','invalidate']){
+  let f;f=fixture({fetch:async()=>busy(),wait:async()=>{if(change==='owner')f.owner('other@example.test');else f.api.invalidate();}});
+  await assert.rejects(f.api.hydrate([ref],context));assert.equal(f.bodies.length,1);assert.equal(f.created(),0);
+ }
+});
+test('cancelling a real retry wait stops it before the next request',async()=>{
+ let f;f=fixture({fetch:async()=>{setTimeout(()=>f.api.invalidate(),10);return busy();}});
+ await assert.rejects(f.api.hydrate([ref],context));assert.equal(f.bodies.length,1);assert.equal(f.created(),0);
+});
 test('authenticated binary becomes a RAM URL while references contain no URL or bytes',async()=>{
  const f=fixture(),images=await f.api.hydrate([ref],context);assert.equal(f.api.owns(images[0].url),true);assert.deepEqual(references(images),[ref]);assert.equal(JSON.stringify(references(images)).includes('blob:'),false);
  assert.deepEqual(f.bodies[0],{operationId:operation,ownerTab:tab,expectedEmail:context.expectedEmail,mediaId:file});f.api.release(images);assert.equal(f.api.owns(images[0].url),false);assert.equal(f.revoked.length,1);
