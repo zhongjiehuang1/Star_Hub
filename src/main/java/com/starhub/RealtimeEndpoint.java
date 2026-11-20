@@ -40,9 +40,9 @@ public final class RealtimeEndpoint {
         timeout=TIMER.scheduleAtFixedRate(()->{if(bridge.expired())bridge.fail("实时会话超时，请重新连接。");},10,10,TimeUnit.SECONDS);
     }
     @OnMessage public void message(String text){if(bridge!=null)bridge.receive(text);}
-    @OnClose public void closed(CloseReason reason){if(bridge!=null)bridge.close(reason.getCloseCode().getCode()!=1000);release();}
+    @OnClose public void closed(CloseReason reason){if(bridge!=null)bridge.disconnected(reason.getCloseCode().getCode()!=1000);else release();}
     public void close(){if(bridge!=null)bridge.close(true);release();}
-    @OnError public void error(Throwable ignored){if(bridge!=null)bridge.close();release();}
+    @OnError public void error(Throwable ignored){if(bridge!=null)bridge.disconnected(true);else release();}
     private synchronized void release(){if(timeout!=null)timeout.cancel(false);ACTIVE.remove(this);if(acquired){acquired=false;SLOTS.release();}}
     @WebListener public static class Lifecycle implements ServletContextListener {
         public void contextDestroyed(ServletContextEvent event){for(RealtimeEndpoint e:ACTIVE)e.close();TIMER.shutdownNow();SEARCH.shutdownNow();EXECUTOR.shutdownNow();}

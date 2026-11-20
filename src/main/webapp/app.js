@@ -181,7 +181,7 @@ let realtimeRecognitionLanguage='auto';
 function configureTask() {
   const m=selectedModel(), task=$('task').value;
   refreshSearchControls();
-  $('taskControls').hidden=task==='chat'; $('attachChatFile').hidden=task!=='chat'||!m.inputs.includes('image'); $('chatForm').hidden=false; $('realtimePanel').hidden=task!=='realtime';   $('generationOptions').replaceChildren(); $('inputFile').value=''; $('prompt').disabled=busy;
+  $('taskControls').hidden=task==='chat'; $('attachChatFile').hidden=task!=='chat'||!m.inputs.includes('image'); $('chatForm').hidden=task==='realtime'&&m.id==='gpt-live-1'; $('realtimePanel').hidden=task!=='realtime';   $('generationOptions').replaceChildren(); $('inputFile').value=''; $('prompt').disabled=busy;
   $('fileLabel').hidden=!(['image','video','3d','transcription','audiofx'].includes(task)||(['chat','realtime'].includes(task)&&m.inputs.includes('image')));
   $('inputFile').multiple=(task==='chat'&&m.inputs.includes('image'))||(task==='image'&&(m.referenceLimits?.image||1)>1);
   $('fileLabel').firstChild.textContent=task==='image'?t("参考图片（{0}–{1} 张，附件合计最多 4 MB）",m.referenceLimits?.minImages||0,m.referenceLimits?.image||1):task==='video'?t("首帧图片（附件合计最多 4 MB）"):t("参考文件（最多 4 MB）");
@@ -190,14 +190,14 @@ function configureTask() {
   renderChatAttachments();
   $('documentsLabel').hidden=task!=='rerank'; $('questionLabel').hidden=task!=='decisions';
   const helps={chat:t("可附一张 PNG、JPEG 或 WebP 图片。图片保留在本页对话上下文中；更换为不支持图片的模型时请新建对话。"),image:t("描述想生成的图片，也可上传参考图。部分编辑模型必须提供图片。"),video:t("描述视频内容。异步任务会显示任务 ID，可手动检查进度；不要重复提交同一任务。"),speech:t("输入需要朗读的文字。"),music:t("描述音乐风格、节奏或音效内容。"),audio:t("描述要生成的语音或音乐，返回后可直接播放。"),audiofx:t("上传源音频。人声隔离至少需要 4.6 秒；变声可选择声音；音轨分离返回 ZIP。"),transcription:t("上传音频后发送，文本框可填写备注。"),rerank:t("主输入框填写查询内容，下方每行填写一条待排序文档。"),decisions:t("主输入框填写待分析材料，再填写需要判断的是非问题。"),'3d':t("描述需要生成的 3D 资产；部分模型要求参考图片。"),realtime:t("点击连接后可以开始说话；对话型模型也支持在下方输入文字，转写模型只接收语音。")};
-  $('taskHelp').textContent=helps[task]||'';
+  $('taskHelp').textContent=task==='realtime'&&m.id==='gpt-live-1'?t('连接后即可开始语音对话。')+' '+t('GPT Live 按会话时长计费，后台模型和工具另计费。麦克风权限被拒绝后，会话仍在运行并继续计费；结束请点击结束连接。'):helps[task]||'';
   $('prompt').placeholder=task==='chat'?t("有什么想法，尽管说说…"):task==='transcription'?t("可选：本次转写备注"):t("输入生成描述、文本或查询内容…");
   $('prompt').required=!['transcription','audiofx'].includes(task);
   if(task==='realtime'&&m.outputs.includes('audio')){
     const label=document.createElement('label');label.textContent=t('英语口音');const select=document.createElement('select');select.id='accent';
     select.append(new Option(t('自然口音'),'auto'),new Option(t('美式英语'),'american'),new Option(t('英式英语'),'british'));label.append(select);$('generationOptions').append(label);
-    const recognition=document.createElement('label');recognition.textContent=t('识别语言');const languages=document.createElement('select');languages.id='recognitionLanguage';
-    languages.append(new Option(t('自动识别'),'auto'),new Option(t('中文'),'zh'),new Option(t('英语'),'en'));languages.value=realtimeRecognitionLanguage;languages.addEventListener('change',()=>{if(['auto','zh','en'].includes(languages.value))realtimeRecognitionLanguage=languages.value;});recognition.append(languages);$('generationOptions').append(recognition);
+    if(m.id!=='gpt-live-1'){const recognition=document.createElement('label');recognition.textContent=t('识别语言');const languages=document.createElement('select');languages.id='recognitionLanguage';
+    languages.append(new Option(t('自动识别'),'auto'),new Option(t('中文'),'zh'),new Option(t('英语'),'en'));languages.value=realtimeRecognitionLanguage;languages.addEventListener('change',()=>{if(['auto','zh','en'].includes(languages.value))realtimeRecognitionLanguage=languages.value;});recognition.append(languages);$('generationOptions').append(recognition);}
   }
   if(['speech','music','realtime','audiofx'].includes(task)&&m.voices.length){const label=document.createElement('label');label.textContent=t(task==='realtime'?'音色':'声音');const select=document.createElement('select');select.id='voice';select.append(...m.voices.map((v,i)=>new Option(task==='realtime'?t('音色 {0}',i+1):(typeof v==='string'?v:JSON.stringify(v)),typeof v==='string'?v:JSON.stringify(v))));label.append(select);$('generationOptions').append(label);}
   updateConnection(); render(); document.dispatchEvent(new CustomEvent('starhub:modelchanged'));

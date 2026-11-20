@@ -54,11 +54,11 @@ function realtimeUi(){
   if($('voice'))$('voice').disabled=active;
   if($('accent'))$('accent').disabled=active;
   if($('recognitionLanguage'))$('recognitionLanguage').disabled=active;
-  if($('realtimeMicrophone'))$('realtimeMicrophone').disabled=Boolean(rt?.recording||rt?.stopping);
+  if($('realtimeMicrophone'))$('realtimeMicrophone').disabled=Boolean(rt?.stopping);
   $('connectRealtime').disabled=active||busy||publicInsecure;$('endRealtime').disabled=!active;
-  $('recordRealtime').disabled=!rt?.ready||rt?.stopping||rt?.idleEnded;$('interruptRealtime').disabled=!rt?.ready||rt.transcription||rt?.idleEnded;
+  $('recordRealtime').disabled=!rt?.ready||rt?.stopping||rt?.idleEnded;$('interruptRealtime').disabled=!rt?.ready||rt.transcription||rt?.idleEnded||rt?.model?.id==='gpt-live-1';
   $('recordRealtime').textContent=rt?.recording?t('暂停麦克风'):t('开启麦克风');
-  $('send').disabled=busy||!ready||publicInsecure||($('task').value==='realtime'&&(!rt?.ready||rt.transcription||rt.idleEnded));
+  $('send').disabled=busy||!ready||publicInsecure||($('task').value==='realtime'&&(!rt?.ready||rt.transcription||rt.idleEnded||rt.model?.id==='gpt-live-1'));
   document.querySelectorAll('.history button').forEach(b=>b.disabled=active||busy);
 }
 function rtSend(event){if(rt?.idleEnded)throw new Error(t('登录状态已结束，请重新登录原账户。'));if(!rt?.socket||rt.socket.readyState!==WebSocket.OPEN)throw new Error(t("实时连接尚未就绪。"));if(rt.socket.bufferedAmount>(event.type==='input_audio_buffer.append'?512000:8*1024*1024)){endRealtime(t("网络发送拥堵，已停止连接。"));throw new Error(t("网络发送拥堵。"));}rt.socket.send(JSON.stringify(event));}
@@ -70,7 +70,10 @@ function expireRealtime(){
 function stopPlayback(state=rt){if(!state)return;for(const node of state.playing){try{node.stop();}catch{}}state.playing.clear();state.nextPlay=state.audio.currentTime;}
 function playAudio(base64,event){
   if(!rt)return;const responseId=event.response_id||rt.currentResponse||'unknown';
-  if(rt.skippedAudioResponse===responseId)return;
+  if(rt.skippedAudioResponse===responseId){
+    if(rt.model?.id!=='gpt-live-1'||rt.nextPlay-rt.audio.currentTime>5||rt.playing.size>=8192)return;
+    rt.skippedAudioResponse=null;
+  }
   const raw=atob(base64);if(!raw.length||raw.length%2)return;
   const duration=raw.length/2/24000;
   // Generation can legitimately run ahead of real-time playback. Bound both
@@ -95,7 +98,7 @@ function finishRealtimeMapReply(state){
   if(state?.assistant?.realtimeReplyPending){delete state.assistant.realtimeReplyPending;queueRender();}
 }
 function interruptRealtime(){
-  if(!rt?.ready||rt.transcription)return;
+  if(!rt?.ready||rt.transcription||rt.model?.id==='gpt-live-1')return;
   if(rt.webSearch)rtSend({type:'starhub.cancel_search'});
   if(typeof StarRealtimeSearch!=='undefined')StarRealtimeSearch.clear(rt);
   if(rt.currentResponse)rt.ignoredResponses.add(rt.currentResponse);if(rt.responding)rtSend({type:'response.cancel'});
@@ -114,8 +117,47 @@ function rtEvent(event){
   if(!rt)return;
   if(event.type==='starhub.web_search'){if(typeof StarRealtimeSearch!=='undefined')StarRealtimeSearch.handle(event,rt,{notice:realtimeNotice,t});return;}
   if(event.type==='starhub.session_ended'){expireRealtime();if(typeof StarSessionIdle!=='undefined')StarSessionIdle.check();return;}
-  if(event.type==='starhub.ready'){rt.ready=true;realtimeState(rt.transcription?t("转写已连接"):t("语音已连接"));realtimeNotice(t('开启麦克风后开始实时对话；会话最长 30 分钟。'));realtimeUi();return;}
-  if(event.type==='starhub.error'){rt.failureMessage=event.message;realtimeNotice(event.message);if(!rt.ready)endRealtime(event.message);return;}
+  if(event.type==='starhub.ready'){if(rt.ready)return;rt.ready=true;realtimeState(rt.transcription?t("转写已连接"):t("语音已连接"));realtimeNotice(t('正在开启麦克风；会话最长 30 分钟。'));realtimeUi();beginRecording();return;}
+  if(event.type==='starhub.error'){
+    if(rt.liveControl&&rt.liveControl.id===event.client_event_id){const control=rt.liveControl;clearTimeout(control.timer);rt.liveControl=null;control.reject(new Error(event.message));return;}
+    const message=rt.model?.id==='gpt-live-1'&&rt.webSearch&&event.errorCode==='responses_validation_failed'?t('联网后台配置失败，请检查账户的模型和搜索权限，或关闭联网后重新连接。'):event.message;
+    rt.failureMessage=message;realtimeNotice(message);if(!rt.ready)endRealtime(message);return;
+  }
+  if(rt.model?.id==='gpt-live-1'){
+    if(event.type==='starhub.live_search'){
+      if(event.status==='searching')realtimeNotice(t('正在联网搜索…'));
+      else if(event.status==='completed')realtimeNotice(t('联网搜索完成，正在整理回答。'));
+      else if(event.status==='failed')realtimeNotice(t('联网搜索暂时失败，请稍后重试。'));
+      return;
+    }
+    if(event.type==='starhub.live_citation'){
+      const id=event.delegationId,citation=typeof StarRealtimeSearch!=='undefined'?StarRealtimeSearch.safeCitation(event):null;
+      if(typeof id!=='string'||!/^[A-Za-z0-9_-]{1,150}$/.test(id)||!citation)return;
+      const groups=rt.liveSourceGroups||(rt.liveSourceGroups=new Map());let message=groups.get(id);
+      if(!message){if(groups.size>=10)return;message=addRtMessage('assistant',t('联网搜索来源'));delete message.realtimeReplyPending;message.details={webSearchUsed:true,webCitations:[]};groups.set(id,message);}
+      const citations=message.details.webCitations;if(citations.length<10&&!citations.some(item=>item.url===citation.url)){citations.push(citation);queueRender();}
+      return;
+    }
+    if(event.type==='session.output_audio.delta'&&typeof event.delta==='string'){playAudio(event.delta,event);return;}
+    if(['session.input_audio.muted','session.input_audio.unmuted'].includes(event.type)){if(rt.liveControl&&rt.liveControl.id===event.client_event_id&&rt.liveControl.expected===event.type){const control=rt.liveControl;clearTimeout(control.timer);rt.liveControl=null;control.resolve();}return;}
+    if(['session.input_transcript.delta','session.output_transcript.delta'].includes(event.type)&&typeof event.delta==='string'&&event.delta){
+      const role=event.type==='session.input_transcript.delta'?'user':'assistant';
+      if(role==='user'&&typeof StarSessionIdle!=='undefined')StarSessionIdle.activity(true,true);
+      const start=Number.isFinite(event.start_ms)?event.start_ms:null,end=Number.isFinite(event.end_ms)?event.end_ms:null;
+      const streams=rt.liveTranscripts||(rt.liveTranscripts={});let message=streams[role];
+      const tail=typeof current!=='undefined'&&Array.isArray(current?.messages)?current.messages[current.messages.length-1]:null;
+      // The provider has no transcript turn IDs. Keep truly overlapping speech
+      // together, but do not append a new turn above a later answer or sources.
+      const tailEnd=Number.isFinite(tail?.liveEnd)?tail.liveEnd:null;
+      const separated=Boolean(message&&tail&&tail!==message&&(tailEnd===null||message.liveEnd===null||start===null||(tailEnd>=message.liveEnd&&start>=tailEnd)));
+      if(!message||separated||(start!==null&&message.liveEnd!==null&&start-message.liveEnd>2500)){
+        message=streams[role]=addRtMessage(role,'');message.liveFragments=[];message.liveEnd=null;
+        if(role==='user')message.mapTranscriptFailed=true;else delete message.realtimeReplyPending;
+      }
+      message.liveFragments.push({text:event.delta,start_ms:start,end_ms:end});if(end!==null)message.liveEnd=message.liveEnd===null?end:Math.max(message.liveEnd,end);message.content+=event.delta;queueRender();return;
+    }
+    return;
+  }
   if(event.type==='input_audio_buffer.speech_started'){
     rt.speechActive=true;
     if(typeof StarSessionIdle!=='undefined')StarSessionIdle.activity(true,true);
@@ -182,6 +224,14 @@ $('connectRealtime').onclick=async()=>{
     endRealtime(e.message||t("浏览器无法建立实时音频连接。"));if(typeof showRealtimeRecovery==='function')showRealtimeRecovery(e,model);
   }finally{releasePreparation();if(current()){rtConnecting=false;realtimeUi();}}
 };
+function liveAudioControl(action){
+  const state=rt,id='mic_'+(state.liveControlSequence=(state.liveControlSequence||0)+1);
+  return new Promise((resolve,reject)=>{
+    const timer=setTimeout(()=>{if(rt===state&&state.liveControl?.id===id){state.liveControl=null;reject(new Error(t('麦克风控制超时，请重新连接。')));}},8000);
+    state.liveControl={id,expected:action==='mute'?'session.input_audio.muted':'session.input_audio.unmuted',timer,resolve,reject};
+    try{rtSend({type:'starhub.input_audio.'+action,event_id:id});}catch(error){clearTimeout(timer);state.liveControl=null;reject(error);}
+  });
+}
 async function beginRecording(){
   if(!rt?.ready||rt.idleEnded||rt.recording||rt.stopping)return;const state=rt;state.stopping=true;realtimeUi();
   try{
@@ -189,32 +239,37 @@ async function beginRecording(){
     const device=typeof selectedRealtimeMicrophone==='function'?selectedRealtimeMicrophone():'';
     const audioConstraints={channelCount:1,echoCancellation:true,noiseSuppression:true,autoGainControl:true};if(device)audioConstraints.deviceId={exact:device};
     const stream=await navigator.mediaDevices.getUserMedia({audio:audioConstraints,video:false});
-    if(rt!==state){stream.getTracks().forEach(t=>t.stop());return;}
+    if(rt!==state||state.idleEnded){stream.getTracks().forEach(t=>t.stop());return;}
     if(typeof refreshRealtimeMicrophones==='function')refreshRealtimeMicrophones();
-    const track=stream.getAudioTracks()[0];if(!track||track.readyState==='ended'){stream.getTracks().forEach(t=>t.stop());throw new Error(t('音频设备未能启动，请检查系统音频设置。'));}
+    const track=stream.getAudioTracks()[0];if(!track||track.readyState==='ended'){stream.getTracks().forEach(t=>t.stop());throw new Error(t('音频设备未能启动，请检查系统音频设置。'));}state.micInputMuted=Boolean(track.muted);
     state.stream=stream;if(!state.workletLoaded){await state.audio.audioWorklet.addModule('audio-capture.js?v=20261117-realtime-input');state.workletLoaded=true;}
-    if(rt!==state){stream.getTracks().forEach(t=>t.stop());return;}
-    await state.audio.resume();if(rt!==state){stream.getTracks().forEach(t=>t.stop());return;}
+    if(rt!==state||state.idleEnded){stream.getTracks().forEach(t=>t.stop());return;}
+    await state.audio.resume();if(rt!==state||state.idleEnded){stream.getTracks().forEach(t=>t.stop());return;}
     if(state.audio.state&&state.audio.state!=='running')throw new Error(t('音频设备未能启动，请检查系统音频设置。'));
-    if(!state.transcription)interruptRealtime();
+    if(!state.transcription&&state.model?.id!=='gpt-live-1')interruptRealtime();
     state.source=state.audio.createMediaStreamSource(stream);const capture=state.capture=new AudioWorkletNode(state.audio,'starhub-capture');state.sentBytes=0;
     // These transcription models use manual turn detection. Commit bounded
     // segments while recording and the final segment when pausing.
     state.manualTranscription=state.transcription&&['gpt-live-transcribe','gpt-realtime-whisper'].includes(state.model?.id);
     state.uncommittedBytes=0;
+    const showMicTrouble=message=>{realtimeMicStatus(message);const details=typeof $==='function'?$('realtimeDetails'):null;if(details)details.open=true;};
     const failed=()=>{
       if(rt!==state||state.capture!==capture||!state.recording||state.stopping)return;
       clearTimeout(state.micTimer);state.stopping=true;state.source?.disconnect();capture.disconnect();state.stream?.getTracks().forEach(t=>t.stop());
       state.recording=false;state.stopping=false;state.speechActive=false;
+      if(state.model?.id==='gpt-live-1'){state.stopping=true;liveAudioControl('mute').then(()=>{if(rt===state){state.liveMuted=true;state.stopping=false;realtimeUi();}}).catch(error=>{if(rt===state)endRealtime(error.message);});}
       if(state.manualTranscription&&state.uncommittedBytes>=4800)try{rtSend({type:'input_audio_buffer.commit'});state.uncommittedBytes=0;}catch(error){endRealtime(error.message);return;}
       realtimeMicStatus('麦克风连接已中断，请重新开启。');realtimeState(t('麦克风已暂停'));realtimeUi();
     };
-    track.addEventListener('ended',failed,{once:true});capture.onprocessorerror=failed;
+    track.addEventListener('ended',failed,{once:true});
+    track.addEventListener('mute',()=>{if(rt===state&&state.capture===capture){state.micInputMuted=true;showMicTrouble('麦克风输入暂不可用，请检查系统设置或切换麦克风。');}});
+    track.addEventListener('unmute',()=>{if(rt===state&&state.capture===capture){state.micInputMuted=false;realtimeMicStatus('麦克风已开启，未检测到声音');}});
+    capture.onprocessorerror=failed;
     capture.port.onmessage=e=>{
       if(rt!==state||state.capture!==capture)return;
       if(e.data.audio&&(state.recording||state.stopping)){const bytes=new Uint8Array(e.data.audio);let binary='';for(const byte of bytes)binary+=String.fromCharCode(byte);
-        const level=Number(e.data.level),now=performance.now();if(Number.isFinite(level)&&level>=0.0005)state.lastWeakMicSignal=now;if(Number.isFinite(level)&&level>=0.008)state.lastMicSignal=now;
-        realtimeMicStatus(state.lastMicSignal&&now-state.lastMicSignal<2000?'麦克风输入正常':state.lastWeakMicSignal&&now-state.lastWeakMicSignal<2000?'麦克风声音很小，请检查输入音量或选择其他麦克风。':'麦克风已开启，尚未检测到声音');
+        const level=Number(e.data.level),now=performance.now();state.lastMicFrame=now;state.micRecoveryAttempted=false;if(Number.isFinite(level)&&level>=0.0005)state.lastWeakMicSignal=now;if(Number.isFinite(level)&&level>=0.008)state.lastMicSignal=now;
+        realtimeMicStatus(state.micInputMuted?'麦克风输入暂不可用，请检查系统设置或切换麦克风。':state.lastMicSignal&&now-state.lastMicSignal<2000?'麦克风输入正常':state.lastWeakMicSignal&&now-state.lastWeakMicSignal<2000?'麦克风声音很小，请检查输入音量或选择其他麦克风。':'麦克风已开启，未检测到声音');
         // A standalone partial worklet flush below 100 ms cannot be committed.
         if(!state.manualTranscription||state.uncommittedBytes||bytes.length>=4800)try{
           rtSend({type:'input_audio_buffer.append',audio:btoa(binary)});state.sentBytes+=bytes.length;
@@ -222,10 +277,12 @@ async function beginRecording(){
         }catch(error){endRealtime(error.message);}}
       if(e.data.flushed&&state.flushDone){state.flushDone();state.flushDone=null;}
     };
-    state.source.connect(state.capture);state.capture.connect(state.audio.destination);state.recording=true;state.stopping=false;state.recordStart=performance.now();
-    state.lastMicSignal=0;state.lastWeakMicSignal=0;realtimeMicStatus('麦克风已开启，尚未检测到声音');state.micTimer=setTimeout(()=>{if(rt===state&&state.recording&&!state.sentBytes)realtimeMicStatus('麦克风无音频数据，请检查浏览器或系统输入设备。');},4000);
-    realtimeState(t('● 正在听'));realtimeNotice(t('语音会持续发送，停顿后自动回复；每段语音结束后显示识别文字，转写可能产生额外费用。')+(state.manualTranscription?' '+t('此转写模式请操作页面以保持登录；连续 10 分钟无操作后会话结束。'):''));realtimeUi();
-  }catch(e){state.stream?.getTracks().forEach(t=>t.stop());state.source?.disconnect();state.capture?.disconnect();if(rt===state){state.stopping=false;realtimeNotice(e.name==='NotAllowedError'?t("麦克风权限未开启，请在浏览器地址栏允许本站使用麦克风。"):['NotFoundError','OverconstrainedError'].includes(e.name)?t('所选麦克风不可用，请选择其他设备后重试。'):e.message);realtimeUi();}}
+    state.source.connect(state.capture);state.capture.connect(state.audio.destination);if(state.model?.id==='gpt-live-1'&&state.liveMuted){await liveAudioControl('unmute');if(rt!==state||state.idleEnded)return;state.liveMuted=false;}state.recording=true;state.stopping=false;state.recordStart=performance.now();
+    state.lastMicSignal=0;state.lastWeakMicSignal=0;state.lastMicFrame=null;realtimeMicStatus(state.micInputMuted?'麦克风输入暂不可用，请检查系统设置或切换麦克风。':'麦克风已开启，未检测到声音');
+    const watchMic=()=>{if(rt!==state||!state.recording||state.stopping)return;const now=performance.now();if(state.audio.state&&state.audio.state!=='running'){if(!state.micRecoveryAttempted){state.micRecoveryAttempted=true;try{Promise.resolve(state.audio.resume()).catch(()=>{});}catch{}}showMicTrouble('音频处理已暂停，请暂停并重新开启麦克风。');}else if(state.micInputMuted)showMicTrouble('麦克风输入暂不可用，请检查系统设置或切换麦克风。');else if(state.lastMicFrame===null||now-state.lastMicFrame>=4000)showMicTrouble('麦克风无音频数据，请检查浏览器或系统输入设备。');state.micTimer=setTimeout(watchMic,4000);};
+    state.micTimer=setTimeout(watchMic,4000);
+    realtimeState(t('● 正在听'));realtimeNotice(state.model?.id==='gpt-live-1'?t('语音会持续发送；GPT Live 按会话时长计费，后台模型和工具另计费。'):t('语音会持续发送，停顿后自动回复；每段语音结束后显示识别文字，转写可能产生额外费用。')+(state.manualTranscription?' '+t('此转写模式请操作页面以保持登录；连续 10 分钟无操作后会话结束。'):''));realtimeUi();
+  }catch(e){state.stream?.getTracks().forEach(t=>t.stop());state.source?.disconnect();state.capture?.disconnect();if(rt===state&&!state.idleEnded){state.stopping=false;realtimeNotice((e.name==='NotAllowedError'?t("麦克风权限未开启，请在浏览器地址栏允许本站使用麦克风。"):['NotFoundError','OverconstrainedError'].includes(e.name)?t('所选麦克风不可用，请选择其他设备后重试。'):e.message)+(state.model?.id==='gpt-live-1'?' '+t('GPT Live 按会话时长计费，后台模型和工具另计费。麦克风权限被拒绝后，会话仍在运行并继续计费；结束请点击结束连接。'):''));realtimeUi();}}
 }
 async function finishRecording(){
   const state=rt;if(!state?.recording||state.stopping)return;state.stopping=true;realtimeUi();
@@ -233,15 +290,18 @@ async function finishRecording(){
   state.source?.disconnect();state.stream?.getTracks().forEach(t=>t.stop());
   try{
     await new Promise((resolve,reject)=>{const timer=setTimeout(()=>reject(new Error(t("音频处理超时，请重新连接。"))),2000);state.flushDone=()=>{clearTimeout(timer);resolve();};state.capture.port.postMessage('flush');});
-    if(rt!==state)return;
-    state.capture.disconnect();state.recording=false;state.stopping=false;
+    if(rt!==state||state.idleEnded)return;
+    state.capture.disconnect();state.recording=false;
+    if(state.model?.id==='gpt-live-1'){await liveAudioControl('mute');if(rt!==state||state.idleEnded)return;state.liveMuted=true;}
+    state.stopping=false;
     // Finish the current turn when the microphone is paused during speech.
     if(state.manualTranscription&&state.uncommittedBytes>=4800){rtSend({type:'input_audio_buffer.commit'});state.uncommittedBytes=0;}
-    else if(state.speechActive&&!state.transcription){state.speechActive=false;rtSend({type:'input_audio_buffer.commit'});rtSend({type:'response.create'});}
+    else if(state.speechActive&&!state.transcription&&state.model?.id!=='gpt-live-1'){state.speechActive=false;rtSend({type:'input_audio_buffer.commit'});rtSend({type:'response.create'});}
     realtimeState(t('麦克风已暂停'));realtimeUi();
   }catch(e){endRealtime(e.message);}
 }
 $('recordRealtime').onclick=()=>rt?.recording?finishRecording():beginRecording();$('interruptRealtime').onclick=interruptRealtime;
+$('realtimeMicrophone')?.addEventListener('change',async()=>{const state=rt;if(!state?.recording||state.stopping)return;await finishRecording();if(rt===state&&state.ready&&!state.idleEnded&&!state.recording&&!state.stopping)await beginRecording();});
 async function settleRealtimeReceipt(id,owner){
   for(let attempt=0;attempt<6;attempt++){
     if(!owner())return;
@@ -252,10 +312,19 @@ async function settleRealtimeReceipt(id,owner){
 }
 function endRealtime(message=t("实时连接已结束。"),normal=false){
   const state=rt;finishRealtimeMapReply(state);rt=null;rtGeneration++;rtConnecting=false;
+  if(state?.liveControl){const control=state.liveControl;state.liveControl=null;clearTimeout(control.timer);control.reject(new Error(message));}
   if(state){clearTimeout(state.recordTimer);clearTimeout(state.connectTimer);clearTimeout(state.micTimer);realtimeMicStatus('');state.stream?.getTracks().forEach(t=>t.stop());state.source?.disconnect();state.capture?.disconnect();stopPlayback(state);
     const orderly=normal&&state.ready&&state.socket?.readyState===WebSocket.OPEN&&!state.failureMessage;
     for(const message of state.transcripts.values()){if(message.mapTranscriptPending){delete message.mapTranscriptPending;message.mapTranscriptFailed=true;}if(message.transcriptPending){message.content=t('语音转写尚未完成。');delete message.transcriptPending;}}
-    if(orderly){const owner=StarProviderOperations.ownerGuard();state.socket.close(1000,'Session ended');settleRealtimeReceipt(state.operationId,owner);}
+    if(orderly){const owner=StarProviderOperations.ownerGuard();
+      if(state.model?.id==='gpt-live-1'){
+        // Live reports final usage asynchronously; keep the socket open until
+        // the bridge observes session.closed, then reconcile the receipt.
+        let closed=false;const timer=setTimeout(()=>{if(closed)return;closed=true;if(owner())StarProviderOperations.markUnknown(state.operationId);state.socket.close();},20000);
+        state.socket.onmessage=()=>{};state.socket.onclose=()=>{if(closed)return;closed=true;clearTimeout(timer);settleRealtimeReceipt(state.operationId,owner);};
+        try{state.socket.send(JSON.stringify({type:'starhub.close'}));}catch{closed=true;clearTimeout(timer);if(owner())StarProviderOperations.markUnknown(state.operationId);state.socket.close();}
+      }else{state.socket.close(1000,'Session ended');settleRealtimeReceipt(state.operationId,owner);}
+    }
     else{if(!state.dispatched&&state.operation){if(state.operation.fresh)StarProviderOperations.discardUnsent(state.operation);}else if(state.operationId)StarProviderOperations.markUnknown(state.operationId);state.socket?.close();}
     state.audio.close().catch(()=>{});
   }
@@ -263,7 +332,7 @@ function endRealtime(message=t("实时连接已结束。"),normal=false){
 }
 $('endRealtime').onclick=()=>endRealtime(t('实时连接已结束。'),true);window.addEventListener('pagehide',()=>endRealtime());
 document.addEventListener('starhub:realtime-text',async()=>{
-  if(!rt?.ready||rt.transcription){realtimeNotice(t("请先连接语音对话模型；转写模型只接收语音。"));return;}
+  if(!rt?.ready||rt.transcription||rt.model?.id==='gpt-live-1'){realtimeNotice(t("请先连接语音对话模型；转写模型只接收语音。"));return;}
   if(rt.stopping||rt.textPending){realtimeNotice(t('请等待当前输入处理完成。'));return;}
   const text=$('prompt').value.trim();if(!text)return;const state=rt;state.textPending=true;
   try{const image=await readInputFile();if(rt!==state)return;interruptRealtime();const content=[{type:'input_text',text}];if(image)content.push({type:'input_image',image_url:image});rtSend({type:'conversation.item.create',item:{type:'message',role:'user',content}});rt.acceptAudio=true;rtSend({type:'response.create'});addRtMessage('user',text);$('prompt').value='';if(typeof resetMemoryInputTracking==='function')resetMemoryInputTracking();realtimeState(t("等待回复"));}catch(e){realtimeNotice(e.message);}finally{state.textPending=false;}
@@ -271,5 +340,5 @@ document.addEventListener('starhub:realtime-text',async()=>{
 document.addEventListener('starhub:modelchanged',()=>{
   if(rt||rtConnecting)endRealtime();const m=selectedModel();
   $('realtimeTitle').textContent=m?.outputs.includes('audio')?t("实时语音对话"):t("实时语音转写");
-  if(m?.categories.includes('realtime')){$('prompt').disabled=!m.outputs.includes('audio');realtimeUi();}
+  if(m?.categories.includes('realtime')){$('prompt').disabled=!m.outputs.includes('audio')||m.id==='gpt-live-1';realtimeUi();}
 });

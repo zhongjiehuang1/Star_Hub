@@ -53,3 +53,34 @@ test('manual transcription audio volume alone does not count as account activity
  vm.runInContext(source.slice(source.indexOf('async function beginRecording(){'),source.indexOf('async function finishRecording(){')),context);
  await vm.runInContext('beginRecording()',context);state.capture.port.onmessage({data:{audio:new Uint8Array(4800).buffer,level:0.5}});assert.equal(activity,0);
 });
+test('a late microphone permission grant is released after session expiry',async()=>{
+ let grant,stopped=0;const pending=new Promise(resolve=>{grant=resolve;});
+ const track={stop(){stopped++;}},stream={getTracks:()=>[track],getAudioTracks:()=>[track]};
+ const state={ready:true,recording:false,stopping:false,audio:{audioWorklet:{}}};
+ const context=vm.createContext({rt:state,navigator:{mediaDevices:{getUserMedia:()=>pending}},t:x=>x,realtimeUi(){}});
+ vm.runInContext(source.slice(source.indexOf('async function beginRecording(){'),source.indexOf('async function finishRecording(){')),context);
+ const starting=vm.runInContext('beginRecording()',context);state.idleEnded=true;state.stopping=false;grant(stream);await starting;
+ assert.equal(stopped,1);assert.equal(state.recording,false);assert.equal(state.stream,undefined);
+});
+test('capture watchdog reports a later audio stall and track mute instead of stale input status',async()=>{
+ let now=0,resumes=0;const events={},levels=[],timers=[],details={open:false};const track={readyState:'live',muted:false,addEventListener(name,fn){events[name]=fn;},stop(){}},stream={getTracks:()=>[track],getAudioTracks:()=>[track]};
+ const audio={state:'running',audioWorklet:{addModule:async()=>{}},resume:async()=>{resumes++;},destination:{},createMediaStreamSource:()=>({connect(){},disconnect(){}})};
+ const state={ready:true,recording:false,stopping:false,transcription:false,model:{id:'gpt-live-1'},audio};
+ class Worklet{constructor(){this.port={}}connect(){}disconnect(){}}
+ const ctx=vm.createContext({rt:state,$:id=>id==='realtimeDetails'?details:null,navigator:{mediaDevices:{getUserMedia:async()=>stream}},selectedRealtimeMicrophone:()=>'',refreshRealtimeMicrophones(){},AudioWorkletNode:Worklet,performance:{now:()=>now},Uint8Array,btoa:value=>Buffer.from(value,'binary').toString('base64'),t:x=>x,realtimeUi(){},realtimeNotice(){},realtimeState(){},realtimeMicStatus:value=>levels.push(value),rtSend(){},endRealtime(){},setTimeout:fn=>{timers.push(fn);return timers.length;},clearTimeout(){}});
+ vm.runInContext(source.slice(source.indexOf('async function beginRecording(){'),source.indexOf('async function finishRecording(){')),ctx);await ctx.beginRecording();
+ now=100;state.capture.port.onmessage({data:{audio:new Uint8Array(4).buffer,level:0.1}});assert.equal(levels.at(-1),'麦克风输入正常');
+ now=5000;timers.shift()();assert.equal(levels.at(-1),'麦克风无音频数据，请检查浏览器或系统输入设备。');assert.equal(details.open,true);
+ events.mute();assert.match(levels.at(-1),/暂不可用/);state.capture.port.onmessage({data:{audio:new Uint8Array(4).buffer,level:0}});assert.match(levels.at(-1),/暂不可用/);
+ events.unmute();now=5100;state.capture.port.onmessage({data:{audio:new Uint8Array(4).buffer,level:0.1}});assert.equal(levels.at(-1),'麦克风输入正常');
+ audio.state='suspended';now=9000;timers.shift()();assert.match(levels.at(-1),/音频处理已暂停/);assert.equal(resumes,2);
+ now=13000;timers.shift()();assert.equal(resumes,2,'do not repeatedly resume the same interruption');
+ audio.state='running';now=13100;state.capture.port.onmessage({data:{audio:new Uint8Array(4).buffer,level:0.1}});audio.state='suspended';now=17000;timers.shift()();assert.equal(resumes,3,'a new interruption gets one recovery attempt');
+});
+test('switching microphone while recording pauses then restarts with the selected input',async()=>{
+ let change,finish;const done=new Promise(resolve=>{finish=resolve;});const state={ready:true,recording:true,stopping:false};const calls=[];
+ const controls={recordRealtime:{},interruptRealtime:{},realtimeMicrophone:{addEventListener(name,fn){if(name==='change')change=fn;}}};
+ const ctx=vm.createContext({rt:state,$:id=>controls[id],finishRecording:async()=>{calls.push('pause');state.stopping=true;await done;state.recording=false;state.stopping=false;},beginRecording:async()=>calls.push('restart'),interruptRealtime(){}});
+ vm.runInContext(source.slice(source.indexOf("$('recordRealtime').onclick"),source.indexOf('async function settleRealtimeReceipt')),ctx);
+ const switching=change();assert.deepEqual(calls,['pause']);finish();await switching;assert.deepEqual(calls,['pause','restart']);
+});

@@ -1,6 +1,6 @@
 # Star Hub storage and recovery
 
-This guide describes the current single-database deployment. For host-specific paths, startup, backup and restore, use `Linux_Server_2026-11-14/SERVER_CURRENT_STATE.md` and `Linux_Server_2026-11-14/Recovery_Tools/README.md` in local OneDrive. Confirm the installed release and its configuration before maintenance.
+This guide describes the current single-database deployment. For host-specific paths, startup, backup and restore, use `Linux_Server_2026-11-20/SERVER_CURRENT_STATE.md` and `Linux_Server_2026-11-20/Recovery_Tools/README.md` in local OneDrive. Confirm the installed release and its configuration before maintenance.
 
 ## Architecture and availability
 

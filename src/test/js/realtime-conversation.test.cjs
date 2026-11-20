@@ -18,6 +18,14 @@ function playbackHarness(){
  vm.runInContext(section(source,'function rtEvent(event){',"$('connectRealtime').onclick"),ctx);
  return {ctx,state,nodes,notices,sent,ended:()=>ended};
 }
+test('ready starts the microphone once for voice and transcription sessions',()=>{
+ for(const transcription of [false,true]){
+  const {ctx,state}=realtimeHarness();state.ready=false;state.transcription=transcription;let starts=0;
+  ctx.beginRecording=()=>{starts++;};
+  ctx.rtEvent({type:'starhub.ready'});ctx.rtEvent({type:'starhub.ready'});
+  assert.equal(state.ready,true);assert.equal(starts,1);
+ }
+});
 test('long generated audio plays without disconnecting and remains interruptible on overflow',()=>{
  const {ctx,state,nodes,notices,ended}=playbackHarness(),second='\0'.repeat(48000),event={response_id:'r1',item_id:'audio1',content_index:0};
  for(let i=0;i<120;i++)ctx.playAudio(second,event);

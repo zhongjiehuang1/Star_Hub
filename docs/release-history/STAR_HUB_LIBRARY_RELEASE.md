@@ -1,6 +1,6 @@
 > Historical release record. Paths beginning `OneDrive root/` are relative to the `Zhongjie_Huang_s_Database` folder in OneDrive. Verify current settings and recovery material before acting on historical details.
 
-> **Current recovery paths:** The original local `Server_Recovery_Work` has been retired to an encrypted OneDrive archive. Use the new OneDrive `Recovery_Tools` and local custody location documented in `SERVER_RECOVERY_ONEDRIVE_MIGRATION.md` (see `OneDrive root/Linux_Server_2026-11-14/SERVER_RECOVERY_ONEDRIVE_MIGRATION.md`); paths below describe the historical release.
+> **Current recovery paths:** The original local `Server_Recovery_Work` and its historical OneDrive archive have been retired. Use the new OneDrive `Recovery_Tools` and local custody location documented in `SERVER_RECOVERY_ONEDRIVE_MIGRATION.md` (see `OneDrive root/Linux_Server_2026-11-20/SERVER_RECOVERY_ONEDRIVE_MIGRATION.md`); paths below describe the historical release.
 
 # Star Hub library and realtime-status release
 
