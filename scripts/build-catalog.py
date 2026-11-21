@@ -3,7 +3,7 @@
 import json,re
 from pathlib import Path
 ROOT=Path(__file__).resolve().parents[1]
-ALLOWED={'openai':'openai','anthropic':'anthropic','gemini':'google','deepseek':'deepseek','qwen':'alibaba','moonshot':'moonshotai','xai':'x-ai'}
+ALLOWED={'openai':'openai','anthropic':'anthropic','gemini':'google','deepseek':'deepseek','qwen':'alibaba','moonshot':'moonshotai'}
 data=json.loads((ROOT/'research/official-models.json').read_text())
 assert {p['id'] for p in data['providers']}==set(ALLOWED)
 assert len({m['uid'] for m in data['models']})==len(data['models'])

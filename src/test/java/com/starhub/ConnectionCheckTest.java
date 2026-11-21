@@ -9,7 +9,7 @@ class ConnectionCheckTest {
     ObjectNode req(String provider){return ModelGateway.JSON.createObjectNode().put("provider",provider).put("apiKey","fixture-key");}
     ModelGateway.Reply reply(int code,String body){return new ModelGateway.Reply(code,body.getBytes(StandardCharsets.UTF_8));}
     @Test void usesOnlyOfficialModelListsAndProviderAuthentication()throws Exception{
-        for(String provider:List.of("openai","anthropic","gemini","deepseek","moonshot","xai")){
+        for(String provider:List.of("openai","anthropic","gemini","deepseek","moonshot")){
             ObjectNode r=req(provider).put("baseUrl","https://example.invalid");
             ConnectionCheck check=new ConnectionCheck((uri,headers)->{
                 assertEquals(ModelGateway.PROVIDERS.get(provider).base+"/models",uri.toString());assertFalse(uri.toString().contains("fixture-key"));assertDoesNotThrow(()->ApiRoutes.requireOfficial(uri));

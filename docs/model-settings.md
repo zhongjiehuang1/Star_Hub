@@ -6,14 +6,14 @@ The current provider, model, task, reasoning effort and web-search choice are re
 
 | Capability | Implemented controls |
 | --- | --- |
-| Chat | Seven official providers; model-specific input, reasoning, output and search controls |
+| Chat | Six official providers; model-specific input, reasoning, output and search controls |
 | Images | GPT Image 2.6 Sunburst; text-to-image and supported settings |
-| Speech | xAI Voice API; voice and speed, xAI API key required |
+| Speech | Not currently integrated |
 | Transcription | GPT-Transcribe; audio upload |
 | Embeddings | text-embedding-3-large; dimensions and encoding |
-| Batch | GPT-6.1 Sol and text-embedding-3-large |
+| Batch | GPT-6.2 Sol and text-embedding-3-large |
 | Realtime voice | GPT-Realtime-2.1 and GPT Live 1; voice and session controls |
 
 GPT Live 1 sessions are billed by duration; delegated backend model and web-search usage are billed separately. Web search uses the existing search setting and displays available source links. The microphone starts after connection when the browser grants permission. A connected session continues to run if permission is denied, until it is ended.
 
-The xAI Voice API contract was tested with local stubs, not a live billed request. Account availability and access must be verified separately.
+Realtime voice and transcription remain available through the listed OpenAI integrations.

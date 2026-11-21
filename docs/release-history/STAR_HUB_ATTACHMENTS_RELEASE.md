@@ -1,6 +1,6 @@
 > Historical release record. Paths beginning `OneDrive root/` are relative to the `Zhongjie_Huang_s_Database` folder in OneDrive. Verify current settings and recovery material before acting on historical details.
 
-> **Current recovery paths:** The original local `Server_Recovery_Work` and its historical OneDrive archive have been retired. Use the new OneDrive `Recovery_Tools` and local custody location documented in `SERVER_RECOVERY_ONEDRIVE_MIGRATION.md` (see `OneDrive root/Linux_Server_2026-11-20/SERVER_RECOVERY_ONEDRIVE_MIGRATION.md`); paths below describe the historical release.
+> **Current recovery paths:** The original local `Server_Recovery_Work` and its historical OneDrive archive have been retired. Use the new OneDrive `Recovery_Tools` and local custody location documented in `SERVER_RECOVERY_ONEDRIVE_MIGRATION.md` (see `OneDrive root/Linux_Server_2026-11-21/SERVER_RECOVERY_ONEDRIVE_MIGRATION.md`); paths below describe the historical release.
 
 > **14 November live voice and visualization release:** Current Star Hub WAR, backup and verification are recorded in [STAR_HUB_LIVE_RELEASE.md](STAR_HUB_LIVE_RELEASE.md). This supersedes earlier Star Hub WAR and backup references below.
 
@@ -18,4 +18,4 @@ All four local application admissions passed on both hosts before public entry r
 
 ## Encrypted off-device key backup
 
-The new recovery key also has a password-encrypted copy in `OneDrive root/Linux_Server_2026-11-20/Recovery_Key_Backup/recovery-key.encrypted.json`, alongside its recovery tool and instructions. AES-256-GCM with scrypt protects the key; the password is not stored in OneDrive. The written envelope was decrypted and compared in memory with the local key, and OneDrive File Provider reported the three files uploaded. This key applies only to the new backup above, not the older encrypted archives. The chosen password was supplied in chat and is reused elsewhere; replace it with a unique high-entropy password when practical. Never include the password or plaintext key in this document.
+The new recovery key also has a password-encrypted copy in `OneDrive root/Linux_Server_2026-11-21/Recovery_Key_Backup/recovery-key.encrypted.json`, alongside its recovery tool and instructions. AES-256-GCM with scrypt protects the key; the password is not stored in OneDrive. The written envelope was decrypted and compared in memory with the local key, and OneDrive File Provider reported the three files uploaded. This key applies only to the new backup above, not the older encrypted archives. The chosen password was supplied in chat and is reused elsewhere; replace it with a unique high-entropy password when practical. Never include the password or plaintext key in this document.

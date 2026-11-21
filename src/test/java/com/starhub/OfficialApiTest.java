@@ -15,9 +15,9 @@ class OfficialApiTest {
     ObjectNode request(String model,String task){return new ParameterGatewayTest().req("openai",model,task);}
     MediaGateway.Response response(String text){return new MediaGateway.Response(200,"application/json",text.getBytes(StandardCharsets.UTF_8));}
     @Test void catalogAndProviderListContainOnlyManufacturerOwnedIntegrations(){
-        assertEquals(Set.of("openai","anthropic","gemini","deepseek","qwen","moonshot","xai"),ModelGateway.PROVIDERS.keySet());
+        assertEquals(Set.of("openai","anthropic","gemini","deepseek","qwen","moonshot"),ModelGateway.PROVIDERS.keySet());
         String encoded=Catalog.DATA.toString().toLowerCase();for(String excluded:List.of("openrouter","pollinations","groq","siliconflow"))assertFalse(encoded.contains(excluded));
-        Map<String,String> makers=Map.of("openai","openai","anthropic","anthropic","gemini","google","deepseek","deepseek","qwen","alibaba","moonshot","moonshotai","xai","x-ai");
+        Map<String,String> makers=Map.of("openai","openai","anthropic","anthropic","gemini","google","deepseek","deepseek","qwen","alibaba","moonshot","moonshotai");
         Set<String> ids=new HashSet<>();
         for(JsonNode m:Catalog.DATA.path("models")){
             assertTrue(ids.add(m.path("uid").asText()));assertEquals(makers.get(m.path("provider").asText()),m.path("vendor").asText());
@@ -26,8 +26,8 @@ class OfficialApiTest {
         assertTrue(ids.size() >= Catalog.publicData().path("models").size());
     }
     @Test void removedProvidersCannotReachChatMediaBatchOrRealtime(){
-        for(String removed:List.of("openrouter","pollinations","groq","siliconflow","custom")){
-            ObjectNode r=request("gpt-6.1-sol","chat").put("provider",removed);
+        for(String removed:List.of("openrouter","pollinations","groq","siliconflow","custom","xai")){
+            ObjectNode r=request("gpt-6.2-sol","chat").put("provider",removed);
             assertThrows(ModelGateway.Problem.class,()->new ModelGateway((a,b,c)->{throw new AssertionError();}).chat(r));
             assertThrows(ModelGateway.Problem.class,()->new MediaGateway((a,b,c,d,e)->{throw new AssertionError();}).run(r));
             assertThrows(ModelGateway.Problem.class,()->new BatchGateway((a,b,c,d,e)->{throw new AssertionError();}).run(r));
@@ -87,11 +87,6 @@ class OfficialApiTest {
         assertEquals(0,calls[0]);ObjectNode generated=request("gpt-image-2.6-flare","image");generated.putObject("parameters").put("n",4);
         assertEquals(4,gateway.run(generated).path("media").size());assertEquals(1,calls[0]);
     }
-    @Test void nativeSpeechPreservesVoiceSettingsAndReturnsPlayableAudio()throws Exception{
-        ObjectNode r=request("voice-tts","speech").put("provider","xai").put("voice","eve");r.putObject("parameters").put("speed",1.1);
-        JsonNode out=new MediaGateway((method,url,key,type,bytes)->{assertEquals("https://api.x.ai/v1/tts",url);JsonNode b=ModelGateway.JSON.readTree(bytes);assertEquals("eve",b.path("voice_id").asText());assertEquals("auto",b.path("language").asText());assertFalse(b.has("model"));return new MediaGateway.Response(200,"audio/mpeg",new byte[]{1,2,3});}).run(r);
-        assertEquals("data:audio/mpeg;base64,AQID",out.path("media").path(0).path("url").asText());
-    }
     @Test void imageModerationIsReportedWithoutForwardingProviderDetails(){
         ObjectNode r=request("gpt-image-2.6-sunburst","image");
         MediaGateway blocked=new MediaGateway((a,b,c,d,e)->new MediaGateway.Response(400,"application/json","{\"error\":{\"code\":\"moderation_blocked\",\"message\":\"secret-value\"}}".getBytes(StandardCharsets.UTF_8)));
@@ -110,7 +105,7 @@ class OfficialApiTest {
         new MediaGateway((a,url,c,d,bytes)->{assertEquals("https://api.openai.com/v1/embeddings",url);assertEquals(512,ModelGateway.JSON.readTree(bytes).path("dimensions").asInt());return response("{\"data\":[{\"embedding\":[0.1]}]}");}).run(e);
     }
     @Test void batchUploadUsesNativeJsonlThenReferencesOfficialFileId()throws Exception{
-        for(String model:List.of("gpt-6.1-sol","text-embedding-3-large")){
+        for(String model:List.of("gpt-6.2-sol","text-embedding-3-large")){
             AtomicInteger calls=new AtomicInteger();ObjectNode r=request(model+":batch",model.startsWith("text-")?"embeddings":"chat");r.putArray("inputs").add("第一条").add("第二条");r.putObject("parameters").put(model.startsWith("text-")?"dimensions":"max_tokens",512);
             BatchGateway gateway=new BatchGateway((method,url,key,type,bytes)->{
                 assertEquals("POST",method);assertFalse(new String(bytes,StandardCharsets.UTF_8).contains("test-key"));
@@ -125,10 +120,10 @@ class OfficialApiTest {
             if(url.endsWith("/batch_123"))return response("{\"id\":\"batch_123\",\"status\":\"completed\",\"output_file_id\":\"file_ok\",\"error_file_id\":\"file_error\",\"request_counts\":{\"completed\":1,\"failed\":1,\"total\":2}}");
             if(url.endsWith("/file_ok/content"))return response("{\"custom_id\":\"task-001\",\"response\":{\"body\":{\"choices\":[{\"message\":{\"content\":\"成功\"}}]}}}\n");
             assertTrue(url.endsWith("/file_error/content"));return response("{\"custom_id\":\"task-002\",\"error\":{\"message\":\"secret-value\"}}\n");
-        });JsonNode job=g.run(request("gpt-6.1-sol:batch","chat").put("action","get").put("jobId","batch_123")).path("job");assertEquals(3,calls.get());assertEquals("成功",job.path("results").path(0).path("text").asText());assertFalse(job.toString().contains("secret-value"));assertEquals(2,job.path("results").size());
+        });JsonNode job=g.run(request("gpt-6.2-sol:batch","chat").put("action","get").put("jobId","batch_123")).path("job");assertEquals(3,calls.get());assertEquals("成功",job.path("results").path(0).path("text").asText());assertFalse(job.toString().contains("secret-value"));assertEquals(2,job.path("results").size());
     }
     @Test void batchRejectsInvalidInputsAndDoesNotRetryFailedUpload(){
-        ObjectNode r=request("gpt-6.1-sol:batch","chat");r.putArray("inputs").add("x");AtomicInteger calls=new AtomicInteger();BatchGateway g=new BatchGateway((a,b,c,d,e)->{calls.incrementAndGet();return new MediaGateway.Response(401,"application/json","secret".getBytes());});
+        ObjectNode r=request("gpt-6.2-sol:batch","chat");r.putArray("inputs").add("x");AtomicInteger calls=new AtomicInteger();BatchGateway g=new BatchGateway((a,b,c,d,e)->{calls.incrementAndGet();return new MediaGateway.Response(401,"application/json","secret".getBytes());});
         assertThrows(ModelGateway.Problem.class,()->g.run(r));assertEquals(1,calls.get());r.put("action","get").put("jobId","../secret");assertThrows(ModelGateway.Problem.class,()->g.run(r));assertEquals(1,calls.get());
     }
     @Test void publishedSourceMatchesBuiltFilesAndNeverAcceptsPaths()throws Exception{

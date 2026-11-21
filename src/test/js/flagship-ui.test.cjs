@@ -35,7 +35,7 @@ test('library distinguishes unavailable directions/providers from user filter mi
 });
 test('advanced filters are closed initially and service wizard retains its simple label',()=>{
  const html=fs.readFileSync(path.join(web,'index.html'),'utf8');const details=html.match(/<details id="libraryMoreFilters"([^>]*)>([\s\S]*?)<\/details>/);
- assert(details);assert(!details[1].includes('open'));
+ assert(details);assert(!details[1].includes('open'));assert(!html.includes('id="librarySearch"'));
  for(const id of ['filterCategory','filterSpecialty','filterInput','filterFamily','filterProvider','filterReasoning','filterCost','filterExecution'])assert(details[2].includes('id="'+id+'"'));
  for(const id of ['libraryDirection','librarySearch','filterVendor'])assert(!details[2].includes('id="'+id+'"'));
  assert(fs.readFileSync(path.join(web,'experience.js'),'utf8').includes("t('连接服务')"));
@@ -45,24 +45,24 @@ test('advanced filters are closed initially and service wizard retains its simpl
 test('defaults are explicit, order independent, and never override a saved usable choice',()=>{
  const catalog=JSON.parse(fs.readFileSync(path.join(web,'../resources/catalog.json'),'utf8'));
  const ctx=vm.createContext({catalog,t:x=>x});vm.runInContext(source.slice(source.indexOf('function primaryDirection('),source.indexOf('function selectProvider(')),ctx);
- assert.equal(vm.runInContext("preferredModelId('openai','general',directionModels('general').filter(m=>m.provider==='openai'))",ctx),'gpt-6.1-sol');
+ assert.equal(vm.runInContext("preferredModelId('openai','general',directionModels('general').filter(m=>m.provider==='openai'))",ctx),'gpt-6.2-sol');
  assert.equal(vm.runInContext("preferredModelId('openai','image',directionModels('image').filter(m=>m.provider==='openai'))",ctx),'gpt-image-2.6-flare');
  assert.equal(vm.runInContext("preferredModelId('openai','voice',directionModels('voice').filter(m=>m.provider==='openai'))",ctx),'gpt-realtime-2.1-mini');
- assert.equal(vm.runInContext("preferredModelId('openai','general',directionModels('general').filter(m=>m.provider==='openai'),'gpt-6-astra')",ctx),'gpt-6-astra');
+ assert.equal(vm.runInContext("preferredModelId('openai','general',directionModels('general').filter(m=>m.provider==='openai'),'gpt-6.2-astra')",ctx),'gpt-6.2-astra');
  assert.equal(vm.runInContext("preferredModelId('openai','voice',directionModels('voice').filter(m=>m.provider==='openai'),'gpt-transcribe')",ctx),'gpt-transcribe');
- assert.equal(vm.runInContext("preferredModelId('openai','general',directionModels('general').filter(m=>m.provider==='openai').reverse())",ctx),'gpt-6.1-sol');
- assert.equal(vm.runInContext("preferredModelId('openai','general',directionModels('general').filter(m=>m.provider==='openai'),'gpt-6.1-sol:batch')",ctx),'gpt-6.1-sol');
+ assert.equal(vm.runInContext("preferredModelId('openai','general',directionModels('general').filter(m=>m.provider==='openai').reverse())",ctx),'gpt-6.2-sol');
+ assert.equal(vm.runInContext("preferredModelId('openai','general',directionModels('general').filter(m=>m.provider==='openai'),'gpt-6.2-sol:batch')",ctx),'gpt-6.2-sol');
 });
 test('old saved batch model falls back to normal chat when the workspace starts',()=>{
  const catalog=JSON.parse(fs.readFileSync(path.join(web,'../resources/catalog.json'),'utf8'));
  const direction={value:'general',options:['general','image','video','voice'].map(value=>({value}))};Object.defineProperty(direction,'selectedOptions',{get(){return this.options.filter(o=>o.value===this.value)}});
  const library={...direction,options:direction.options.map(o=>({...o}))};Object.defineProperty(library,'selectedOptions',{get(){return this.options.filter(o=>o.value===this.value)}});
  const controls={provider:{value:'openai'},modelDirection:direction,libraryDirection:library,model:{value:'',replaceChildren(){this.value='';},append(){}},directionNotice:{},apiKey:{},toggleKey:{setAttribute(){}}};
- const settings=new Map([['openai','gpt-6.1-sol:batch']]),directionSettings=new Map([['openai|more','gpt-6.1-sol:batch']]);let configured;
+ const settings=new Map([['openai','gpt-6.2-sol:batch']]),directionSettings=new Map([['openai|more','gpt-6.2-sol:batch']]);let configured;
  const ctx=vm.createContext({catalog,providers:catalog.providers,settings,directionSettings,keys:new Map(),language:'en',t:x=>x,showError(){},configureModel(){configured=controls.model.value;},selectedModel(){return catalog.models.find(m=>m.provider==='openai'&&m.id===controls.model.value);},$:id=>controls[id],document:{createElement(){return {append(){}}}},Option:function(label,value){this.value=value;}});
  vm.runInContext(source.slice(source.indexOf('function primaryDirection('),source.indexOf('function configureModel()')),ctx);
  vm.runInContext("selectProvider(settings.get('openai'))",ctx);
- assert.equal(direction.value,'general');assert.equal(configured,'gpt-6.1-sol');assert.equal(settings.get('openai'),'gpt-6.1-sol');
+ assert.equal(direction.value,'general');assert.equal(configured,'gpt-6.2-sol');assert.equal(settings.get('openai'),'gpt-6.2-sol');
 });
 test('batch has no user-facing creation or recovery controls',()=>{
  const html=fs.readFileSync(path.join(web,'index.html'),'utf8'),advanced=fs.readFileSync(path.join(web,'advanced.js'),'utf8');
@@ -109,7 +109,7 @@ test('encrypted Kimi context is bounded and only follows the same provider and m
  const message="{role:'assistant',content:'answer',provider:'moonshot',model:'kimi-k3',providerContext:{provider:'moonshot',model:'kimi-k3',token:'sealed_context-123'}}";
  assert.equal(run(`outgoingHistoryMessage(${message},'moonshot','kimi-k3')`).providerContext.token,'sealed_context-123');
  assert.equal(run(`outgoingHistoryMessage(${message},'moonshot','kimi-k3.1-pro')`).providerContext,undefined);
- assert.equal(run(`outgoingHistoryMessage(${message},'openai','gpt-6.1-sol')`).providerContext,undefined);
+ assert.equal(run(`outgoingHistoryMessage(${message},'openai','gpt-6.2-sol')`).providerContext,undefined);
  assert.equal(run(`outgoingHistoryMessage({...${message},role:'user'},'moonshot','kimi-k3')`).providerContext,undefined);
  assert.equal(run(`outgoingHistoryMessage({...${message},providerContext:{provider:'moonshot',model:'kimi-k3',token:'x'.repeat(140001)}},'moonshot','kimi-k3')`).providerContext,undefined);
  assert.equal(run(`outgoingHistoryMessage({...${message},providerContext:{provider:'moonshot',model:'kimi-k3',token:'wrong='}},'moonshot','kimi-k3')`).providerContext,undefined);

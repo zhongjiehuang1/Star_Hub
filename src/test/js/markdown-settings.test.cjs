@@ -46,7 +46,7 @@ test('provider and direction changes remember the model they actually select',()
  function direction(value){const el={value,options:['general','image','video','voice','more'].map(value=>({value}))};Object.defineProperty(el,'selectedOptions',{get(){return this.options.filter(o=>o.value===el.value);}});return el;}
  const model={value:'',replaceChildren(){this.value='';},append(){}};
  const controls={provider:{value:'openai'},model,modelDirection:direction('image'),libraryDirection:direction('general'),directionNotice:{},apiKey:{},toggleKey:{setAttribute(){}}};
- const settings=new Map([['openai','gpt-6-astra']]),directionSettings=new Map([['openai|general','gpt-6-astra']]);
+ const settings=new Map([['openai','gpt-6.2-astra']]),directionSettings=new Map([['openai|general','gpt-6.2-astra']]);
  const ctx=vm.createContext({catalog,providers:catalog.providers,settings,directionSettings,keys:new Map(),language:'en',t:x=>x,$:id=>controls[id],
   selectedModel:()=>catalog.models.find(m=>m.provider===controls.provider.value&&m.id===model.value),
   document:{createElement(){return {append(option){if(!model.value)model.value=option.value;}};}},Option:function(text,value){return {text,value};},configureModel(){},showError(){}});

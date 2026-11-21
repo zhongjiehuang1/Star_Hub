@@ -28,7 +28,6 @@ final class ApiRoutes {
     static String realtime(String model){return model.equals("gpt-live-1")?"wss://api.openai.com/v1/live/sessions":model.equals("gpt-live-transcribe")?"wss://api.openai.com/v1/realtime?intent=transcription":"wss://api.openai.com/v1/realtime?model="+URLEncoder.encode(model,StandardCharsets.UTF_8);}
     static String media(JsonNode m,String task,String job){
         if(!job.isEmpty())throw new ModelGateway.Problem(400,"该官方媒体接口不受支持。");
-        if(m.path("provider").asText().equals("xai")&&m.path("id").asText().equals("voice-tts")&&task.equals("speech"))return ModelGateway.PROVIDERS.get("xai").base+"/tts";
         if(!m.path("provider").asText().equals("openai"))throw new ModelGateway.Problem(400,"该官方媒体接口不受支持。");
         String base=ModelGateway.PROVIDERS.get("openai").base;
         switch(task){

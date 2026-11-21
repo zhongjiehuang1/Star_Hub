@@ -126,8 +126,8 @@ class AccountMemoriesTest {
         }
     }
     @Test void semanticRequestIsIsolatedAndRejectsIneligibleInputBeforeProviderValidation()throws Exception{
-        var request=SemanticMemoryRequest.build("openai","gpt-6.1-sol","test-key","我喜欢徒步旅行");
-        assertEquals("openai",request.path("provider").asText());assertEquals("gpt-6.1-sol",request.path("model").asText());
+        var request=SemanticMemoryRequest.build("openai","gpt-6.2-sol","test-key","我喜欢徒步旅行");
+        assertEquals("openai",request.path("provider").asText());assertEquals("gpt-6.2-sol",request.path("model").asText());
         assertFalse(request.path("webSearch").asBoolean());assertFalse(request.path("stream").asBoolean());
         assertEquals(1,request.path("messages").size());assertEquals("user",request.path("messages").get(0).path("role").asText());
         assertEquals("我喜欢徒步旅行",request.path("messages").get(0).path("content").asText());
@@ -135,10 +135,10 @@ class AccountMemoriesTest {
         assertNull(SemanticMemoryRequest.build("bad-provider","bad-model","bad-key","我喜欢账号密码123456"));
         assertThrows(ModelGateway.Problem.class,()->SemanticMemoryRequest.build("openai","gpt-realtime-2.1","test-key","我喜欢徒步旅行"));
         for(String text:List.of("请记住我喜欢中文回答","以后用中文回答","我的名字是小明","请称呼我为小明","Call me Alice","Please remember I prefer concise answers")){
-            assertNotNull(SemanticMemoryRequest.build("openai","gpt-6.1-sol","test-key",text),text);
+            assertNotNull(SemanticMemoryRequest.build("openai","gpt-6.2-sol","test-key",text),text);
             String json=ModelGateway.JSON.createObjectNode().put("kind","PREFERENCE").put("quote",text).toString();assertEquals(1,SemanticMemoryExtractor.validate(text,json).size(),text);
         }
-        assertNull(SemanticMemoryRequest.build("openai","gpt-6.1-sol","test-key","今天谢菲尔德天气如何"));
+        assertNull(SemanticMemoryRequest.build("openai","gpt-6.2-sol","test-key","今天谢菲尔德天气如何"));
     }
     @Test void semanticSourceMustBeTheOriginalSavedTypedUserMessageWithoutAttachments()throws Exception{
         try(Connection c=database();Statement s=c.createStatement()){

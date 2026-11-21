@@ -34,11 +34,5 @@
     "keyUrl": "https://platform.moonshot.cn/console/api-keys",
     "docsUrl": "https://platform.moonshot.cn/docs/guide/start-using-kimi-api",
     "note": "本站使用 Moonshot 中国区平台地址。"
-  },
-  "xai": {
-    "website": "https://console.x.ai/",
-    "keyUrl": "https://console.x.ai/",
-    "docsUrl": "https://docs.x.ai/developers/quickstart",
-    "note": "在 xAI Console 中选择团队，再进入 API Keys。"
   }
 }

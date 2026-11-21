@@ -22,7 +22,7 @@ class ChatStreamTest {
         })).run(ModelGateway.prepare(req,true),out);return out;
     }
     @Test void compatibleProvidersSendStreamingAndParseUtf8UsageWithoutReasoning()throws Exception{
-        for(String provider:new String[]{"deepseek","qwen","moonshot","xai"}){
+        for(String provider:new String[]{"deepseek","qwen","moonshot"}){
             ObjectNode req=request(provider);assertTrue(ModelGateway.prepare(req,true).body.path("stream").asBoolean());
             Capture out=run(req,": keepalive\r\n"+event("{\"choices\":[{\"delta\":{\"content\":\"你好 👋\",\"reasoning_content\":\"private\"}}]}")+
                 event("{\"choices\":[{\"delta\":{\"content\":\"\\n第二行\"},\"finish_reason\":\"stop\"}]}")+event("{\"choices\":[],\"usage\":{\"total_tokens\":7}}")+event("[DONE]"),"text/event-stream;charset=utf-8");
@@ -48,7 +48,7 @@ class ChatStreamTest {
         Capture json=run(req,"{\"choices\":[{\"message\":{\"content\":\"answer\"}}]}","application/json");assertEquals("answer",json.text.toString());assertTrue(json.last.get("done").path("continuationUnavailable").asBoolean());
     }
     @Test void responsesUsesDeltaAndCompletedWithoutDuplicatingOutput()throws Exception{
-        ObjectNode req=request("openai");req.put("model","gpt-6.1-sol");
+        ObjectNode req=request("openai");req.put("model","gpt-6.2-sol");
         ModelGateway.Prepared p=ModelGateway.prepare(req,true);assertTrue(p.uri.toString().endsWith("/responses"));assertTrue(p.body.path("stream").asBoolean());assertFalse(p.body.path("store").asBoolean(true));
         Capture out=run(req,event("{\"type\":\"response.output_text.delta\",\"delta\":\"回答\"}")+event("{\"type\":\"response.completed\",\"response\":{\"usage\":{\"output_tokens\":2},\"output\":[{\"content\":[{\"type\":\"output_text\",\"text\":\"回答\"}]}]}}"),"text/event-stream");
         assertEquals("回答",out.text.toString());assertEquals(2,out.last.get("done").path("usage").path("output_tokens").asInt());
@@ -94,7 +94,7 @@ class ChatStreamTest {
         for(JsonNode p:Catalog.DATA.path("providers"))for(String key:new String[]{"website","keyUrl","docsUrl","baseUrl"})assertTrue(p.path(key).asText().startsWith("https://"),p.path("id").asText()+"/"+key);
     }
     @Test void searchCitationsSurviveStreamingAndJsonFallback() throws Exception {
-        ObjectNode req=request("openai").put("model","gpt-6.1-sol").put("webSearch",true);
+        ObjectNode req=request("openai").put("model","gpt-6.2-sol").put("webSearch",true);
         String annotation="{\"type\":\"url_citation\",\"url\":\"https://example.com\",\"title\":\"Source\",\"start_index\":0,\"end_index\":2}";
         Capture stream=run(req,event("{\"type\":\"response.output_text.delta\",\"delta\":\"OK\"}")+event("{\"type\":\"response.output_text.annotation.added\",\"annotation\":"+annotation+"}")+event("{\"type\":\"response.completed\",\"response\":{}}"),"text/event-stream");
         assertEquals("https://example.com",stream.last.get("done").path("details").path("webCitations").path(0).path("url").asText());
@@ -102,13 +102,13 @@ class ChatStreamTest {
         assertEquals("Source",json.last.get("done").path("details").path("webCitations").path(0).path("title").asText());
     }
     @Test void publicReasoningSummaryStreamsSeparatelyFromAnswer() throws Exception {
-        ObjectNode req=request("openai").put("model","gpt-6.1-sol");
+        ObjectNode req=request("openai").put("model","gpt-6.2-sol");
         assertEquals("auto",ModelGateway.prepare(req,true).body.path("reasoning").path("summary").asText());
         Capture out=run(req,event("{\"type\":\"response.reasoning_summary_text.delta\",\"delta\":\"Public summary\"}")+event("{\"type\":\"response.output_text.delta\",\"delta\":\"Answer\"}")+event("{\"type\":\"response.completed\",\"response\":{}}"),"text/event-stream");
         assertEquals("Public summary",out.last.get("reasoning").path("text").asText());assertEquals("Answer",out.text.toString());
     }
     @Test void providerSearchEvidenceSurvivesStreaming() throws Exception {
-        ObjectNode deep=request("xai").put("model","grok-4.7").put("webSearch",true);
+        ObjectNode deep=request("openai").put("model","gpt-6.2-sol").put("webSearch",true);
         Capture d=run(deep,event("{\"type\":\"response.output_item.done\",\"item\":{\"type\":\"web_search_call\",\"action\":{\"sources\":[{\"url\":\"https://example.org\",\"title\":\"Source\"}]}}}")+event("{\"type\":\"response.output_text.delta\",\"delta\":\"Done\"}")+event("{\"type\":\"response.completed\",\"response\":{}}"),"text/event-stream");
         assertTrue(d.last.get("done").path("details").path("webSearchUsed").asBoolean());assertEquals("https://example.org",d.last.get("done").path("details").path("webCitations").path(0).path("url").asText());
         ObjectNode claude=request("anthropic").put("model","claude-fable-5-2").put("webSearch",true);

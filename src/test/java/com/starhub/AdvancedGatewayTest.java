@@ -162,7 +162,7 @@ class AdvancedGatewayTest {
     }
     @Test void imageMessagesMapToAllThreeProtocolsAndResponses()throws Exception{
         String image="data:image/png;base64,AAAA";
-        String[][] cases={{"openai","gpt-6.1-sol"},{"anthropic","claude-fable-5-2"},{"gemini","gemini-4-carbon"}};
+        String[][] cases={{"openai","gpt-6.2-sol"},{"anthropic","claude-fable-5-2"},{"gemini","gemini-4-carbon"}};
         for(String[] item:cases){
             ModelGateway gateway=new ModelGateway((uri,headers,bytes)->{
                 JsonNode body=ModelGateway.JSON.readTree(bytes);String result;

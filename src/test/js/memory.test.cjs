@@ -6,7 +6,7 @@ function harness(){
  vm.createContext(ctx);vm.runInContext(fs.readFileSync(path.join(__dirname,'../../main/webapp/memory.js'),'utf8'),ctx);ctx.api=vm.runInContext('StarMemory',ctx);return {ctx,calls,ops};
 }
 test('semantic extraction captures consent and saves only a bound completed operation',async()=>{
- const {ctx,calls,ops}=harness();const selection={provider:'openai',model:'gpt-6.1-sol',apiKey:'synthetic-key',sourceChatId:'chat',sourceMessageIndex:0};
+ const {ctx,calls,ops}=harness();const selection={provider:'openai',model:'gpt-6.2-sol',apiKey:'synthetic-key',sourceChatId:'chat',sourceMessageIndex:0};
  const token=await ctx.api.prepareSemantic('我喜欢徒步旅行',ctx.accountEmail,1,selection);assert.equal(token.revision,7);
  await ctx.api.rememberSemantic(token);assert.deepEqual(ops.map(x=>x[0]),['prepare','dispatch','observe','ack']);
  assert.equal(calls[1].action,'saveSemanticMemory');assert.equal(calls[1].memoryRevision,7);assert.equal(calls[1].extraction.operationId,'test-operation');

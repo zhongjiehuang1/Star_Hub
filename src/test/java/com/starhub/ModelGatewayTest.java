@@ -99,7 +99,7 @@ class ModelGatewayTest {
         assertThrows(ModelGateway.Problem.class, () -> g.chat(request("openai")));
     }
     @Test void requestTimeAndSearchAreBoundToSupportedModels() throws Exception {
-        ObjectNode r=request("openai").put("model","gpt-6.1-sol").put("timeZone","Europe/London").put("webSearch",true);
+        ObjectNode r=request("openai").put("model","gpt-6.2-sol").put("timeZone","Europe/London").put("webSearch",true);
         ModelGateway.Prepared p=ModelGateway.prepare(r,true);
         assertTrue(p.body.path("input").path(0).path("content").asText().contains("time zone: Europe/London"));
         assertEquals("web_search",p.body.path("tools").path(0).path("type").asText());
@@ -110,8 +110,7 @@ class ModelGatewayTest {
     }
     @Test void officialSearchConfigurationsAreProviderSpecific() throws Exception {
         ObjectNode claude=request("anthropic").put("model","claude-fable-5-2").put("webSearch",true);assertEquals("web_search_20250305",ModelGateway.prepare(claude,true).body.path("tools").path(0).path("type").asText());
-        ObjectNode qwen=request("qwen").put("model","qwen3.8-max").put("webSearch",true);assertTrue(ModelGateway.prepare(qwen,true).body.path("enable_search").asBoolean());
-        ObjectNode xai=request("xai").put("model","grok-4.7").put("webSearch",true);assertEquals("https://api.x.ai/v1/responses",ModelGateway.prepare(xai,true).uri.toString());
+        ObjectNode qwen=request("qwen").put("model","qwen4-max").put("webSearch",true);assertTrue(ModelGateway.prepare(qwen,true).body.path("enable_search").asBoolean());assertFalse(ModelGateway.prepare(qwen,true).body.path("preserve_thinking").asBoolean(true));
         ObjectNode deep=request("deepseek").put("model","deepseek-flash").put("webSearch",true);assertThrows(ModelGateway.Problem.class,()->ModelGateway.prepare(deep,true));
     }
     @Test void currentSecondaryModelsUseTheirOfficialSearchProtocol() throws Exception {
@@ -119,11 +118,6 @@ class ModelGatewayTest {
         ModelGateway.Prepared q=ModelGateway.prepare(qwen,true);
         assertEquals("https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions",q.uri.toString());
         assertTrue(q.body.path("enable_search").asBoolean());
-        ObjectNode xai=request("xai").put("model","grok-4.6").put("webSearch",true);
-        ModelGateway.Prepared x=ModelGateway.prepare(xai,true);
-        assertEquals("https://api.x.ai/v1/responses",x.uri.toString());
-        assertEquals("web_search",x.body.path("tools").path(0).path("type").asText());
-        assertTrue(x.responses);
     }
     @Test void geminiSearchUsesGoogleTool() throws Exception {ObjectNode r=request("gemini").put("model","gemini-4-carbon").put("webSearch",true);assertTrue(ModelGateway.prepare(r,true).body.path("tools").path(0).has("google_search"));}
 }

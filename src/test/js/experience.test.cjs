@@ -111,8 +111,8 @@ test('guest busy-read retries stop after three attempts',async()=>{
  assert.equal(await f.run('StarStore.initGuest()'),false);assert.equal(f.run('attempts'),3);
 });
 test('model selection preserves explicit choices by provider and direction without saving keys',()=>{
- const f=fixture();f.run("StarStore.saveSelection('openai',new Map([['openai','gpt-6-astra']]),new Map([['openai|general','gpt-6-astra'],['openai|image','gpt-image-2.6-sunburst']]))");
- assert.equal(f.run('StarStore.selection().directions["openai|general"]'),'gpt-6-astra');
+ const f=fixture();f.run("StarStore.saveSelection('openai',new Map([['openai','gpt-6.2-astra']]),new Map([['openai|general','gpt-6.2-astra'],['openai|image','gpt-image-2.6-sunburst']]))");
+ assert.equal(f.run('StarStore.selection().directions["openai|general"]'),'gpt-6.2-astra');
  assert.equal(f.run('StarStore.selection().directions["openai|image"]'),'gpt-image-2.6-sunburst');
  assert(!f.data.get('starhub.v1.selection').includes('apiKey'));
 });

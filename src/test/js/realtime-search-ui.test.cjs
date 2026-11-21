@@ -23,6 +23,6 @@ test('transcription and unsupported realtime providers do not expose the live se
  }
 });
 test('normal chat search remains available and localized',()=>{
- const {controls,context}=controlsFor({provider:'openai',id:'gpt-6.1-sol',outputs:['text']},'chat','zh');vm.runInContext('refreshSearchControls()',context);
+ const {controls,context}=controlsFor({provider:'openai',id:'gpt-6.2-sol',outputs:['text']},'chat','zh');vm.runInContext('refreshSearchControls()',context);
  assert.equal(controls.searchControls.hidden,false);assert.equal(controls.webSearch.disabled,false);assert.equal(controls.searchLabel.textContent,'联网搜索');
 });

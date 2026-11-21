@@ -35,13 +35,12 @@ final class ModelGateway {
 
     private static Map<String, Provider> providers() {
         Map<String, Provider> all = new LinkedHashMap<>();
-        add(all, "openai", "OpenAI", "openai", "https://api.openai.com/v1", "gpt-6.1-sol", "gpt-6-astra");
+        add(all, "openai", "OpenAI", "openai", "https://api.openai.com/v1", "gpt-6.2-sol", "gpt-6.2-astra");
         add(all, "anthropic", "Claude", "anthropic", "https://api.anthropic.com/v1", "claude-fable-5-2");
         add(all, "gemini", "Gemini", "gemini", "https://generativelanguage.googleapis.com/v1beta", "gemini-4-carbon");
         add(all, "deepseek", "DeepSeek", "openai", "https://api.deepseek.com/v1", "deepseek-flash");
-        add(all, "qwen", "通义千问", "openai", "https://dashscope.aliyuncs.com/compatible-mode/v1", "qwen3.8-max");
+        add(all, "qwen", "通义千问", "openai", "https://dashscope.aliyuncs.com/compatible-mode/v1", "qwen4-max");
         add(all, "moonshot", "Kimi", "openai", "https://api.moonshot.cn/v1", "kimi-k3.1-pro");
-        add(all, "xai", "xAI", "openai", "https://api.x.ai/v1", "grok-4.7");
         return Collections.unmodifiableMap(all);
     }
     private static void add(Map<String, Provider> all, String id, String name, String protocol, String base, String... models) {
@@ -162,14 +161,15 @@ final class ModelGateway {
                 else {ObjectNode reference=parts.addObject().put("type","image_url").putObject("image_url").put("url",image);if(parameters.has("image_detail"))reference.set("detail",parameters.path("image_detail"));}
             }
         }
+        // This workspace does not retain private reasoning across turns.
+        if(p.id.equals("qwen") && model.equals("qwen4-max"))body.put("preserve_thinking",false);
         boolean search=request.path("webSearch").asBoolean(false);
-        boolean xaiSearch=search&&p.id.equals("xai")&&java.util.Set.of("grok-4.7","grok-4.6").contains(model);
-        boolean responses = ApiRoutes.responses(p,model)||xaiSearch;
+        boolean responses = ApiRoutes.responses(p,model);
         if(search){
             if(responses)body.putArray("tools").addObject().put("type","web_search");
             else if(p.id.equals("gemini"))body.putArray("tools").addObject().putObject("google_search");
             else if(p.id.equals("anthropic"))body.putArray("tools").addObject().put("type","web_search_20250305").put("name","web_search").put("max_uses",5);
-            else if(p.id.equals("qwen")&&java.util.Set.of("qwen3.8-max","qwen3.8-flash").contains(model))body.put("enable_search",true);
+            else if(p.id.equals("qwen")&&java.util.Set.of("qwen4-max","qwen3.8-flash").contains(model))body.put("enable_search",true);
             else throw new Problem(400,"当前模型的联网搜索尚未接入，请关闭搜索或选择其他模型。");
         }
         if (responses) {
@@ -187,7 +187,7 @@ final class ModelGateway {
         Parameters.chat(body,parameters,modelInfo,p,responses);
         if(responses)body.put("store",false);
         if(stream && !p.protocol.equals("gemini"))body.put("stream",true);
-        return new Prepared(p,model,URI.create(xaiSearch?p.base+"/responses":ApiRoutes.chat(p,model,stream)),headers,body,parameters,responses);
+        return new Prepared(p,model,URI.create(ApiRoutes.chat(p,model,stream)),headers,body,parameters,responses);
     }
     static final class Prepared {
         final Provider provider; final String model; final URI uri; final Map<String,String> headers;
@@ -204,7 +204,7 @@ final class ModelGateway {
     }
     /** Only the already-dispatched realtime search tool uses mandatory search and full sources. */
     ObjectNode chatForRealtimeSearch(JsonNode request) throws IOException {
-        if(!request.path("provider").asText().equals("openai") || !request.path("model").asText().equals("gpt-6.1-sol") || !request.path("webSearch").asBoolean(false))throw new IllegalArgumentException("Invalid realtime search request");
+        if(!request.path("provider").asText().equals("openai") || !request.path("model").asText().equals("gpt-6.2-sol") || !request.path("webSearch").asBoolean(false))throw new IllegalArgumentException("Invalid realtime search request");
         Prepared prepared=prepare(request,false);
         if(!prepared.responses)throw new IllegalArgumentException("Realtime search requires Responses");
         prepared.body.put("tool_choice","required");

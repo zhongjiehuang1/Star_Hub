@@ -14,7 +14,7 @@ class WorkspaceSecurityTest {
   reset(res);when(res.getOutputStream()).thenReturn(out);when(req.getHeader("X-Starhub-Client")).thenReturn("web");when(req.getHeader("Origin")).thenReturn("https://starhub.zhongjiehuang.com");when(req.getContentType()).thenReturn("application/json");servlet.doPost(req,res);verify(res).setStatus(401);
  }
  @Test void twoImagesAreIncludedInProviderRequest() throws Exception {
-  com.fasterxml.jackson.databind.node.ObjectNode r=new ModelGatewayTest().request("openai").put("model","gpt-6.1-sol");((com.fasterxml.jackson.databind.node.ObjectNode)r.withArray("messages").get(0)).putArray("images").add("data:image/png;base64,AAAA").add("data:image/png;base64,AQID");
+  com.fasterxml.jackson.databind.node.ObjectNode r=new ModelGatewayTest().request("openai").put("model","gpt-6.2-sol");((com.fasterxml.jackson.databind.node.ObjectNode)r.withArray("messages").get(0)).putArray("images").add("data:image/png;base64,AAAA").add("data:image/png;base64,AQID");
   com.fasterxml.jackson.databind.JsonNode parts=ModelGateway.prepare(r,true).body.path("input").path(1).path("content");assertEquals("input_image",parts.path(1).path("type").asText());assertEquals("input_image",parts.path(2).path("type").asText());
  }
 }

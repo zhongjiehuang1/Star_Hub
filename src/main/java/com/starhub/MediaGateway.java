@@ -24,8 +24,7 @@ final class MediaGateway {
     ObjectNode run(JsonNode r)throws IOException {
         JsonNode m=Catalog.find(r.path("provider").asText(),r.path("model").asText());
         String task=r.path("task").asText(),key=r.path("apiKey").asText().trim(),prompt=r.path("prompt").asText();
-        boolean xaiSpeech=m.path("provider").asText().equals("xai")&&m.path("id").asText().equals("voice-tts")&&task.equals("speech");
-        if((!m.path("provider").asText().equals("openai")&&!xaiSpeech)||m.path("batch").asBoolean()||!Catalog.contains(m.path("categories"),task))throw bad("请选择支持该任务的官方模型。");
+        if(!m.path("provider").asText().equals("openai")||m.path("batch").asBoolean()||!Catalog.contains(m.path("categories"),task))throw bad("请选择支持该任务的官方模型。");
         if(!key.matches("[\\x21-\\x7e]{1,4096}"))throw bad("请填写有效的 API Key。");
         if(prompt.length()>30000||(!task.equals("transcription")&&prompt.isBlank()))throw bad("请输入任务内容，最多 30,000 字符。");
         ObjectNode params=Parameters.validate(r,m,task),body=ModelGateway.JSON.createObjectNode().put("model",m.path("id").asText());
@@ -41,10 +40,6 @@ final class MediaGateway {
                     url=ApiRoutes.imageEdit();
                 }else if(!r.path("file").asText().isEmpty()||r.path("files").size()>0)throw bad("图片生成不接受参考图片，请使用图片编辑。");
                 body.put("prompt",prompt);break;
-            case "speech":
-                String voice=r.path("voice").asText(xaiSpeech?"eve":"coral");if(!Catalog.contains(m.path("voices"),voice))throw bad("请选择官方支持的声音。");
-                if(!xaiSpeech)throw bad("文字转语音请选择 xAI Voice API。 ");
-                body.remove("model");body.put("text",prompt).put("voice_id",voice).put("language","auto");break;
             case "embeddings":body.put("input",prompt).put("encoding_format","float");break;
             case "transcription":break;
             default:throw bad("此任务尚未接入官方 API。");

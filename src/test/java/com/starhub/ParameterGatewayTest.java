@@ -15,18 +15,18 @@ class ParameterGatewayTest {
     JsonNode model(ObjectNode r){return Catalog.find(r.path("provider").asText(),r.path("model").asText());}
     @Test void unsupportedOutOfRangeAndConditionalSettingsNeverReachNetwork(){
         AtomicInteger calls=new AtomicInteger();ModelGateway gateway=new ModelGateway((u,h,b)->{calls.incrementAndGet();return null;});
-        ObjectNode r=req("openai","gpt-6.1-sol","chat");params(r).put("temperature",.3);assertThrows(ModelGateway.Problem.class,()->gateway.chat(r));
-        r.put("model","gpt-6.1-sol");params(r).put("max_tokens",129000);assertThrows(ModelGateway.Problem.class,()->gateway.chat(r));
+        ObjectNode r=req("openai","gpt-6.2-sol","chat");params(r).put("temperature",.3);assertThrows(ModelGateway.Problem.class,()->gateway.chat(r));
+        r.put("model","gpt-6.2-sol");params(r).put("max_tokens",129000);assertThrows(ModelGateway.Problem.class,()->gateway.chat(r));
         params(r).put("max_tokens",12.5);assertThrows(ModelGateway.Problem.class,()->gateway.chat(r));
         params(r).putObject("json_schema").put("type","object");assertThrows(ModelGateway.Problem.class,()->gateway.chat(r));
         params(r).put("response_format","json_schema");assertThrows(ModelGateway.Problem.class,()->gateway.chat(r));assertEquals(0,calls.get());
     }
     @Test void unsupportedLegacyParametersAreRejectedBeforeDispatch(){
-        AtomicInteger calls=new AtomicInteger();ObjectNode r=req("openai","gpt-6.1-sol","chat");params(r).put("temperature",0).put("logprobs",false).put("seed",0);
+        AtomicInteger calls=new AtomicInteger();ObjectNode r=req("openai","gpt-6.2-sol","chat");params(r).put("temperature",0).put("logprobs",false).put("seed",0);
         assertThrows(ModelGateway.Problem.class,()->new ModelGateway((u,h,b)->{calls.incrementAndGet();return null;}).chat(r));assertEquals(0,calls.get());
     }
     @Test void responseSettingsMapToResponsesSchemaAndRetainEffort()throws Exception{
-        ObjectNode r=req("openai","gpt-6.1-sol","chat").put("effort","high");ObjectNode p=params(r).put("max_tokens",8000).put("verbosity","low").put("response_format","json_schema");p.putObject("json_schema").put("type","object");
+        ObjectNode r=req("openai","gpt-6.2-sol","chat").put("effort","high");ObjectNode p=params(r).put("max_tokens",8000).put("verbosity","low").put("response_format","json_schema");p.putObject("json_schema").put("type","object");
         new ModelGateway((u,h,b)->{JsonNode x=ModelGateway.JSON.readTree(b);assertTrue(u.toString().endsWith("/responses"));assertEquals(8000,x.path("max_output_tokens").asInt());assertEquals("high",x.path("reasoning").path("effort").asText());assertEquals("low",x.path("text").path("verbosity").asText());assertEquals("json_schema",x.path("text").path("format").path("type").asText());assertFalse(x.has("max_tokens"));assertFalse(x.path("store").asBoolean());return new ModelGateway.Reply(200,"{\"output\":[{\"content\":[{\"type\":\"output_text\",\"text\":\"{}\"}]}]}".getBytes());}).chat(r);
     }
     @Test void geminiCurrentModelMapsOutputLimitAndReasoning()throws Exception{

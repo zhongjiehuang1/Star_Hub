@@ -32,7 +32,7 @@ function appendModelApiLinks(root,m){
 }
 function refreshCurrentApi(){
   if(!$('currentApi'))return;
-  const m=selectedModel(),p=providers.find(p=>p.id===$('provider').value);let route=m?.apiRoutes?.[$('task').value]?.[0];if($('task').value==='chat'&&$('webSearch').checked&&!$('webSearch').disabled&&(m?.provider==='xai'&&m.id==='grok-4.7'))route={method:'POST',url:p.baseUrl+'/responses'};
+  const m=selectedModel(),p=providers.find(p=>p.id===$('provider').value);let route=m?.apiRoutes?.[$('task').value]?.[0];
   $('browseApis').disabled=!catalog;$('currentApiUrl').textContent=route?`${route.method} · ${route.url}`:t("请选择模型以查看实际调用地址");
   $('currentApiUrl').removeAttribute('href');if(route?.url.startsWith('https://'))$('currentApiUrl').href=route.url;
   $('currentKeyUrl').textContent=p?.keyUrl?t("密钥入口 · {0}",p.keyUrl):'';

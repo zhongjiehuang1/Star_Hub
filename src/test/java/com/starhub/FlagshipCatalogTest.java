@@ -6,8 +6,8 @@ import org.junit.jupiter.api.Test;
 import static org.junit.jupiter.api.Assertions.*;
 class FlagshipCatalogTest {
  ObjectNode chat(JsonNode m){ObjectNode r=ModelGateway.JSON.createObjectNode().put("provider",m.path("provider").asText()).put("model",m.path("id").asText()).put("apiKey","offline-test-key");r.putArray("messages").addObject().put("role","user").put("content","Offline schema test").put("image","data:image/png;base64,iVBORw0KGgo=");return r;}
- @Test void allSevenGeneralPicksPrepareTextImageWithoutNetwork()throws Exception{
-  JsonNode primary=Catalog.DATA.path("featured").path("primary");assertEquals(7,primary.size());
+ @Test void allSixGeneralPicksPrepareTextImageWithoutNetwork()throws Exception{
+  JsonNode primary=Catalog.DATA.path("featured").path("primary");assertEquals(6,primary.size());
   for(JsonNode provider:primary){String uid=provider.path("general").asText();String[] parts=uid.split("\\|");JsonNode m=Catalog.find(parts[0],parts[1]);assertEquals(Set.of("text","image"),new HashSet<>(ModelGateway.JSON.convertValue(m.path("inputs"),List.class)));ModelGateway.Prepared prepared=ModelGateway.prepare(chat(m),false);assertEquals(parts[1],prepared.model);JsonNode body=prepared.body;assertFalse(body.has("temperature"));assertFalse(body.has("top_p"));assertFalse(body.has("top_k"));if(parts[0].equals("anthropic")){assertEquals(4096,body.path("max_tokens").asInt());assertFalse(body.has("thinking"));}if(parts[0].equals("gemini"))assertTrue(body.path("contents").get(0).path("parts").get(1).has("inlineData"));}
  }
  @Test void imagePickUsesExistingGenerationSchemaOnly()throws Exception{
@@ -19,7 +19,7 @@ class FlagshipCatalogTest {
 
  @Test void secondaryModelsAreExplicitDefaultsAndPrepareOffline() throws Exception {
   JsonNode f=Catalog.DATA.path("featured"),secondary=f.path("secondary"),defaults=f.path("preferredDefault");
-  for(String provider:List.of("openai","anthropic","gemini","qwen","xai")){
+  for(String provider:List.of("openai","anthropic","gemini","qwen")){
    String uid=secondary.path(provider).path("general").asText();assertFalse(uid.isBlank());assertEquals(uid,defaults.path(provider).path("general").asText());
    String[] parts=uid.split("\\|");JsonNode model=Catalog.find(parts[0],parts[1]);assertEquals("secondary",model.path("selectionTier").asText());
    assertEquals(parts[1],ModelGateway.prepare(chat(model),false).model);

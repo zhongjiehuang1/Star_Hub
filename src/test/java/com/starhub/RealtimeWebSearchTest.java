@@ -127,7 +127,7 @@ class RealtimeWebSearchTest {
             return new ModelGateway.Reply(200,response.getBytes(StandardCharsets.UTF_8));
         });
         ObjectNode result=RealtimeWebSearch.search(gateway,"test-key","latest fact","Europe/London");
-        assertEquals("web_search",sent.get().path("tools").path(0).path("type").asText());assertEquals("gpt-6.1-sol",sent.get().path("model").asText());assertFalse(sent.get().path("store").asBoolean(true));
+        assertEquals("web_search",sent.get().path("tools").path(0).path("type").asText());assertEquals("gpt-6.2-sol",sent.get().path("model").asText());assertFalse(sent.get().path("store").asBoolean(true));
         assertEquals("required",sent.get().path("tool_choice").asText());assertEquals("web_search_call.action.sources",sent.get().path("include").path(0).asText());
         assertEquals("A fact.",result.path("answer").asText());assertEquals(1,result.path("citations").size());assertEquals("https://example.org/report",result.path("citations").path(0).path("url").asText());
         ModelGateway noSearch=new ModelGateway((uri,headers,body)->new ModelGateway.Reply(200,"{\"output\":[{\"type\":\"message\",\"content\":[{\"type\":\"output_text\",\"text\":\"unverified\"}]}]}".getBytes(StandardCharsets.UTF_8)));
@@ -139,7 +139,7 @@ class RealtimeWebSearchTest {
         assertEquals(RealtimeWebSearch.FailureCode.NO_SOURCE,assertThrows(RealtimeWebSearch.Failure.class,()->RealtimeWebSearch.search(gateway,"test-key","weather","UTC")).code);
     }
     @Test void ordinaryChatRemainsOptionalAndCannotEnableInternalSearchPolicy()throws Exception{
-        ObjectNode req=ModelGateway.JSON.createObjectNode().put("provider","openai").put("model","gpt-6.1-sol").put("apiKey","test-key").put("webSearch",true).put("forceRealtimeSearch",true);
+        ObjectNode req=ModelGateway.JSON.createObjectNode().put("provider","openai").put("model","gpt-6.2-sol").put("apiKey","test-key").put("webSearch",true).put("forceRealtimeSearch",true);
         req.putArray("messages").addObject().put("role","user").put("content","hello");
         JsonNode body=ModelGateway.prepare(req,false).body;assertFalse(body.has("tool_choice"));assertFalse(body.has("include"));
     }
