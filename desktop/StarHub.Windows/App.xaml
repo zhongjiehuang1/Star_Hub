@@ -1,0 +1,40 @@
+<Application
+    x:Class="StarHub.Windows.App"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+    <Application.Resources>
+        <ResourceDictionary>
+            <ResourceDictionary.MergedDictionaries>
+                <XamlControlsResources xmlns="using:Microsoft.UI.Xaml.Controls" />
+            </ResourceDictionary.MergedDictionaries>
+            <ResourceDictionary.ThemeDictionaries>
+                <ResourceDictionary x:Key="Light">
+                    <SolidColorBrush x:Key="WorkspaceBrush" Color="#FCFBFE" />
+                    <SolidColorBrush x:Key="SideRailBrush" Color="#F1EEF7" />
+                    <SolidColorBrush x:Key="ComposerBrush" Color="#F5F2FA" />
+                    <SolidColorBrush x:Key="UserMessageBrush" Color="#F0EBFC" />
+                    <SolidColorBrush x:Key="BrandBrush" Color="#6150B0" />
+                    <SolidColorBrush x:Key="RuleBrush" Color="#EDE8F3" />
+                </ResourceDictionary>
+                <ResourceDictionary x:Key="Dark">
+                    <SolidColorBrush x:Key="WorkspaceBrush" Color="#18171B" />
+                    <SolidColorBrush x:Key="SideRailBrush" Color="#212026" />
+                    <SolidColorBrush x:Key="ComposerBrush" Color="#24222B" />
+                    <SolidColorBrush x:Key="UserMessageBrush" Color="#2E273C" />
+                    <SolidColorBrush x:Key="BrandBrush" Color="#C9BAFF" />
+                    <SolidColorBrush x:Key="RuleBrush" Color="#302D39" />
+                </ResourceDictionary>
+                <ResourceDictionary x:Key="HighContrast">
+                    <SolidColorBrush x:Key="WorkspaceBrush" Color="{ThemeResource SystemColorWindowColor}" />
+                    <SolidColorBrush x:Key="SideRailBrush" Color="{ThemeResource SystemColorWindowColor}" />
+                    <SolidColorBrush x:Key="ComposerBrush" Color="{ThemeResource SystemColorWindowColor}" />
+                    <SolidColorBrush x:Key="UserMessageBrush" Color="{ThemeResource SystemColorWindowColor}" />
+                    <SolidColorBrush x:Key="BrandBrush" Color="{ThemeResource SystemColorWindowTextColor}" />
+                    <SolidColorBrush x:Key="RuleBrush" Color="{ThemeResource SystemColorWindowTextColor}" />
+                </ResourceDictionary>
+            </ResourceDictionary.ThemeDictionaries>
+            <CornerRadius x:Key="ControlCornerRadius">10</CornerRadius>
+            <CornerRadius x:Key="OverlayCornerRadius">18</CornerRadius>
+        </ResourceDictionary>
+    </Application.Resources>
+</Application>

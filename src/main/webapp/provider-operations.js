@@ -1,0 +1,129 @@
+'use strict';
+// Browser storage contains identities/digests only, never request bodies or credentials.
+(function(root){
+function create({storage,crypto,fetch,actor=()=>'',actorEpoch=()=>0,tab,changed=()=>{},settle=null}){
+ const KEY='starhub.provider.operations',terminal=new Set(['COMPLETED','COMPLETED_NO_RESULT']),uuid=/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+ const readOnlyOperations=new WeakSet();
+ const operationOwners=new WeakMap(); // Incarnations are RAM-only, never receipt metadata or request bodies.
+ const active=new Map(); // In-flight UI state is ephemeral; receipt identities remain durable in session storage.
+ function releaseActive(id){if(active.delete(id))changed();}
+ function isActive(id){const owner=active.get(id);return Boolean(owner)&&sameOwner(owner);}
+ function pendingMessage(message){
+  const reason=message||'The result is unconfirmed. Check the original request before sending again.';
+  const localized=typeof uiText==='function'?uiText(reason):reason;
+  const hint=typeof t==='function'?t('请打开连接设置，在请求记录中查看原请求。'):'Open connection settings and check Request history for the original request.';
+  return localized+' '+hint;
+ }
+ class Pending extends Error{constructor(id,state,message){super(pendingMessage(message));this.operationId=id;this.operationState=state;this.code='PROVIDER_OPERATION_UNKNOWN';}}
+ class ActorChanged extends Error{constructor(id){super('The account or tab changed. Return to the original workspace and check its request identity.');this.operationId=id;this.code='ACTOR_CHANGED';}}
+ function captureOwner(){const owner={email:String(actor()),tab:tab(),epoch:actorEpoch()};if(!/^[0-9a-f]{32}$/.test(owner.tab)||!Number.isSafeInteger(owner.epoch)||owner.epoch<0)throw new ActorChanged();return owner;}
+ function sameOwner(owner){return Boolean(owner)&&String(actor())===owner.email&&tab()===owner.tab&&actorEpoch()===owner.epoch;}
+ function checkOwner(owner,id){if(!sameOwner(owner))throw new ActorChanged(id);}
+ function operationOwner(operation){const owner=operationOwners.get(operation);checkOwner(owner,operation?.id);return owner;}
+ function ownerGuard(){const owner=captureOwner();return ()=>sameOwner(owner);}
+ function records(){try{const rows=JSON.parse(storage.getItem(KEY)||'[]');if(!Array.isArray(rows)||rows.length>40||!rows.every(v=>v&&uuid.test(v.id)&&/^[a-z-]{1,40}$/.test(v.kind)&&/^[0-9a-f]{64}$/.test(v.fingerprint)&&/^[0-9a-f]{64}$/.test(v.actorHash)&&/^[0-9a-f]{32}$/.test(v.tab)&&['PENDING','ABSENT','CLAIMED','SENT','UNKNOWN','COMPLETED','COMPLETED_NO_RESULT'].includes(v.state)&&typeof v.archived==='boolean'))throw 0;return rows;}catch{throw new Error('Pending request storage is unavailable. No provider request was sent.');}}
+ function save(rows){const value=JSON.stringify(rows);try{storage.setItem(KEY,value);if(storage.getItem(KEY)!==value)throw 0;}catch{throw new Error('The request identity could not be saved. No new provider request was sent.');}changed();}
+ function clean(value){
+  if(Array.isArray(value))return value.map(clean);
+  if(value&&typeof value==='object')return Object.fromEntries(Object.keys(value).sort().filter(k=>!['apiKey','password','token','operationId','ownerTab','storageOperationId'].includes(k)).map(k=>{
+   if(k==='providerContext'){
+    const c=value[k];if(value.role!=='assistant'||value.provider!=='moonshot'||typeof value.model!=='string'||!value.model||!c||typeof c!=='object'||Array.isArray(c)||c.provider!=='moonshot'||c.model!==value.model||typeof c.token!=='string'||c.token.length>140000||!/^[A-Za-z0-9_-]+$/.test(c.token)||Object.keys(c).sort().join(',')!=='model,provider,token')throw new Error('Invalid model continuation. No provider request was sent.');
+    // The opaque ciphertext participates only in this in-memory SHA input; browser storage retains the digest, not this value.
+    return [k,{model:c.model,provider:c.provider,contextCiphertext:c.token}];
+   }
+   return [k,clean(value[k])];
+  }));return value;
+ }
+ async function digest(value){return Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256',new TextEncoder().encode(JSON.stringify(value)))),v=>v.toString(16).padStart(2,'0')).join('');}
+ async function visible(){const owner=captureOwner(),hash=await digest(owner.email);checkOwner(owner);return records().filter(v=>v.actorHash===hash&&v.tab===owner.tab);}
+ async function prepare(kind,payload={},options={}){
+  if(!/^[a-z-]{1,40}$/.test(kind))throw new Error('Unknown provider operation kind.');
+  const owner=captureOwner();payload=JSON.parse(JSON.stringify(payload));checkOwner(owner);
+  if(!options.readOnly&&settle){await settle();checkOwner(owner);}
+  const ownerTab=owner.tab,expectedEmail=String(payload.expectedEmail??owner.email);if(expectedEmail!==owner.email)throw new ActorChanged();
+  const actorHash=await digest(expectedEmail);checkOwner(owner);
+  const fingerprint=await digest({kind,payload:clean({...payload,expectedEmail})});checkOwner(owner);const all=records();
+  const scope=all.filter(v=>!v.archived&&v.tab===ownerTab&&v.actorHash===actorHash&&v.kind===kind);let item=scope.find(v=>v.fingerprint===fingerprint);const fresh=!item;
+  if(!item&&scope.length&&!options.readOnly)throw new Pending(scope[0].id,scope[0].state,'An earlier request is unconfirmed. Check it, or explicitly allow a separate request that may incur another charge.');
+  if(fresh){if(all.length>=40)throw new Error('Pending request history is full. Check earlier results first.');item={id:crypto.randomUUID(),kind,tab:ownerTab,actorHash,fingerprint,state:'PENDING',archived:false};all.push(item);active.set(item.id,owner);try{save(all);}catch(error){active.delete(item.id);throw error;}}
+  checkOwner(owner,item.id);const body={...payload,expectedEmail,ownerTab,operationId:item.id};if(kind==='run'&&body.task==='image')body.storageOperationId=item.id;const operation={id:item.id,fresh,body,kind};operationOwners.set(operation,owner);if(options.readOnly)readOnlyOperations.add(operation);return operation;
+ }
+ function markUnknown(id){releaseActive(id);const all=records(),item=all.find(v=>v.id===id);if(item&&!terminal.has(item.state)){item.state='UNKNOWN';save(all);}}
+ function observe(id,value,{keepActive=false}={}){if(!value||value.operationId!==id||!['ABSENT','CLAIMED','SENT','UNKNOWN','COMPLETED','COMPLETED_NO_RESULT'].includes(value.operationState)||(terminal.has(value.operationState)&&!['dual','single'].includes(value.durability)))throw new Pending(id,'UNKNOWN');if(terminal.has(value.operationState)&&!keepActive)releaseActive(id);const all=records(),item=all.find(v=>v.id===id);if(item){item.state=value.operationState;if(terminal.has(value.operationState))item.durability=value.durability;else delete item.durability;save(all);}return value;}
+ async function queryOwned(id,owner){
+  checkOwner(owner,id);const item=records().find(v=>v.id===id),hash=await digest(owner.email);checkOwner(owner,id);
+  if(!item||item.tab!==owner.tab||item.actorHash!==hash)throw new Error('This request belongs to another account or tab.');
+  return readReceipt(id,owner,owner.tab);
+ }
+ async function readReceipt(id,owner,originalTab){
+  checkOwner(owner,id);
+  const response=await fetch('api/provider-operation',{method:'POST',headers:{'Content-Type':'application/json','X-Starhub-Client':'web'},body:JSON.stringify({operationId:id,ownerTab:originalTab,expectedEmail:owner.email}),signal:AbortSignal.timeout(15000)});checkOwner(owner,id);
+  const value=await response.json();checkOwner(owner,id);if(!response.ok)throw new Pending(id,'UNKNOWN',value.error||'The original result is temporarily unavailable.');const result=observe(id,value);checkOwner(owner,id);return result;
+ }
+ async function query(id){const owner=captureOwner(),value=await queryOwned(id,owner);checkOwner(owner,id);return value;}
+ async function querySaved(id,originalTab){
+  const owner=captureOwner();
+  if(!owner.email||!uuid.test(id)||!/^[0-9a-f]{32}$/.test(originalTab))throw new ActorChanged(id);
+  // The receipt endpoint verifies the current account generation and the original tab.
+  const value=await readReceipt(id,owner,originalTab);checkOwner(owner,id);return value;
+ }
+ async function retryDisposition(operation){
+  const owner=operationOwner(operation);if(operation.fresh){checkOwner(owner,operation.id);return null;}const value=await queryOwned(operation.id,owner);checkOwner(owner,operation.id);
+  if(value.operationState==='COMPLETED'){if(value.result==null)throw new Pending(operation.id,'COMPLETED_NO_RESULT','The request finished without an available response. It will not be sent again automatically.');return new Response(JSON.stringify({...value.result,operationId:operation.id,operationState:'COMPLETED',durability:value.durability}),{status:value.httpStatus||200,headers:{'Content-Type':'application/json'}});}
+  if(value.operationState==='ABSENT'||value.operationState==='CLAIMED')return null;
+  throw new Pending(operation.id,value.operationState,value.operationState==='COMPLETED_NO_RESULT'?'The request finished without a retained result. A separate request may incur another charge.':undefined);
+ }
+ async function beforeDispatch(operation){const owner=operationOwner(operation);if(!readOnlyOperations.has(operation)&&settle)await settle();checkOwner(owner,operation.id);}
+ async function requestPrepared(operation,options={}){
+  const owner=operationOwners.get(operation);
+  try{checkOwner(owner,operation?.id);const replay=await retryDisposition(operation);checkOwner(owner,operation.id);let response=replay;
+   if(!response){await beforeDispatch(operation);checkOwner(owner,operation.id);response=await fetch('api/'+(options.endpoint||operation.kind),{method:'POST',headers:{'Content-Type':'application/json','X-Starhub-Client':'web',...(options.headers||{})},body:JSON.stringify(operation.body),signal:options.signal});checkOwner(owner,operation.id);}
+   checkOwner(owner,operation.id);return {response,operationId:operation.id};}
+  catch(error){releaseActive(operation?.id);if(error.code!=='ACTOR_CHANGED'&&sameOwner(owner))markUnknown(operation.id);if(!error.operationId)error.operationId=operation?.id;throw error;}
+  finally{operation.fresh=false;}
+ }
+ async function request(kind,payload,options={}){const operation=await prepare(kind,payload,options),owner=operationOwner(operation);const result=await requestPrepared(operation,{...options,endpoint:options.endpoint||kind});checkOwner(owner,operation.id);return result;}
+ function acknowledge(id){releaseActive(id);const all=records(),item=all.find(v=>v.id===id);if(!item||!terminal.has(item.state))return false;save(all.filter(v=>v.id!==id));return true;}
+ function discardUnsent(operation){releaseActive(operation?.id);if(!operation?.fresh)return false;const all=records(),item=all.find(v=>v.id===operation.id);if(!item||item.state!=='PENDING')return false;save(all.filter(v=>v.id!==operation.id));return true;}
+ // Call only for a server-confirmed validation rejection before claim.
+ function discardRejected(operation){operationOwner(operation);releaseActive(operation.id);const all=records(),item=all.find(v=>v.id===operation.id);if(!item||item.state!=='PENDING')return false;save(all.filter(v=>v.id!==operation.id));return true;}
+ function separate(id){const all=records(),item=all.find(v=>v.id===id);if(item){item.archived=true;save(all);}}
+ return {prepare,beforeDispatch,requestPrepared,request,query,querySaved,observe,markUnknown,acknowledge,discardUnsent,discardRejected,separate,records,visible,isActive,retryDisposition,ownerGuard,Pending};
+}
+// Only a durable, explicitly identified relay-end receipt can be cleared
+// automatically. An unknown request or a result containing user content stays.
+async function reconcileFinishedRealtime(api,item,isCurrent=()=>true){
+ if(!['realtime','realtime-transcription'].includes(item.kind)||api.isActive(item.id)||!isCurrent())return false;
+ const receipt=await api.query(item.id);if(!isCurrent())return false;
+ const result=receipt.result;
+ if(receipt.operationState==='COMPLETED'&&result?.type==='realtime'&&result.status==='relay_ended'&&result.audioRetained===false){return api.acknowledge(item.id);}
+ return false;
+}
+if(typeof module==='object'&&module.exports)module.exports={create,reconcileFinishedRealtime};
+if(root.document){
+ let drawing=false,again=false,viewRevision=0,reconcileTimer=0;const summaries=new Map(),reconciling=new Set(),nextReconcile=new Map();
+ const api=create({storage:{getItem:key=>root.sessionStorage.getItem(key),setItem:(key,value)=>root.sessionStorage.setItem(key,value)},crypto:root.crypto,fetch:(...args)=>root.fetch(...args),actor:()=>typeof accountEmail==='string'?accountEmail:'',actorEpoch:()=>typeof accountIdentityRevision==='number'?accountIdentityRevision:0,tab:()=>StarStore.providerTab(),settle:()=>StarStore.whenSettled(),changed:()=>queueMicrotask(render)});
+ function invalidatePanel(){viewRevision++;summaries.clear();nextReconcile.clear();if(reconcileTimer){clearTimeout(reconcileTimer);reconcileTimer=0;}const panel=document.getElementById('providerPendingOperations');if(panel){panel.hidden=true;panel.replaceChildren();}queueMicrotask(render);}
+ async function render(){if(drawing){again=true;return;}drawing=true;
+  try{const panel=document.getElementById('providerPendingOperations');if(!panel)return;const revision=viewRevision,owner=api.ownerGuard(),active=()=>revision===viewRevision&&owner();const rows=(await api.visible()).filter(item=>!item.kind.startsWith('batch-')&&!api.isActive(item.id));if(!active())return;panel.hidden=!rows.length;panel.replaceChildren();if(!rows.length)return;
+   const live=rows.filter(item=>['realtime','realtime-transcription'].includes(item.kind));
+   for(const item of live){
+    if(reconciling.has(item.id)||Date.now()<(nextReconcile.get(item.id)||0))continue;
+    reconciling.add(item.id);nextReconcile.set(item.id,Date.now()+15000);
+    reconcileFinishedRealtime(api,item,active).catch(()=>{}).finally(()=>{reconciling.delete(item.id);if(active())queueMicrotask(render);});
+   }
+   if(live.length&&!reconcileTimer)reconcileTimer=setTimeout(()=>{reconcileTimer=0;if(!document.hidden)render();},15000);
+   const translate=key=>typeof t==='function'?t(key):key;
+   const title=document.createElement('p');title.textContent=translate('以下请求的状态尚未确认。请先查看原结果；再次发送可能产生额外费用。');panel.append(title);
+   for(const item of rows){const row=document.createElement('p'),label=document.createElement('span');label.textContent=item.kind+' · '+item.id+' · '+item.state+(item.archived?' · '+translate('已允许新请求'):'');row.append(label);
+    if(summaries.has(item.id)){const summary=document.createElement('pre');summary.textContent=summaries.get(item.id);row.append(summary);}
+    const check=document.createElement('button');check.type='button';check.textContent=translate('查看原结果');check.onclick=async()=>{if(!active())return;check.disabled=true;try{const value=await api.query(item.id);if(!active())return;summaries.set(item.id,String(value.result?.text||value.result?.error||(value.result?.job?'Job '+value.result.job.id+' · '+value.result.job.status:value.operationState==='COMPLETED_NO_RESULT'?'Finished without a retained response. A new request may incur another charge.':value.operationState)).slice(0,4000));document.dispatchEvent(new CustomEvent('starhub:provider-result',{detail:value}));queueMicrotask(render);}catch(error){if(active())label.textContent=error.message;}finally{if(active())check.disabled=false;}};row.append(check);
+    if(['ABSENT','CLAIMED'].includes(item.state)){const retry=document.createElement('button');retry.type='button';retry.textContent=translate('重试原请求');retry.onclick=()=>{if(active())document.dispatchEvent(new CustomEvent('starhub:provider-retry',{detail:{operationId:item.id}}));};row.append(retry);}
+    const separate=document.createElement('button');separate.type='button';separate.textContent=terminal(item.state)?translate('确认已完成的结果'):translate('允许新请求（可能再次收费）');separate.onclick=()=>{if(active())return terminal(item.state)?api.acknowledge(item.id):api.separate(item.id);};row.append(separate);panel.append(row);
+   }
+  }catch{}finally{drawing=false;if(again){again=false;queueMicrotask(render);}}
+ }
+ const terminal=state=>['COMPLETED','COMPLETED_NO_RESULT'].includes(state);root.StarProviderOperations=api;
+ document.addEventListener('DOMContentLoaded',render);document.addEventListener('starhub:ready',render);document.addEventListener('starhub:languagechanged',render);document.addEventListener('visibilitychange',()=>{if(!document.hidden)render();});root.addEventListener?.('online',render);document.addEventListener('starhub:account-changed',invalidatePanel);
+}
+})(globalThis);

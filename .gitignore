@@ -1,0 +1,9 @@
+# Keep the current deployable WAR; exclude temporary build products.
+/target/*
+!/target/starhub.war
+.DS_Store
+*.log
+.env
+.env.*
+__pycache__/
+*.pyc

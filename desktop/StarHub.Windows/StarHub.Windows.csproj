@@ -1,0 +1,32 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <AssemblyName>StarHub</AssemblyName>
+    <RootNamespace>StarHub.Windows</RootNamespace>
+    <TargetFramework>net10.0-windows10.0.26100.0</TargetFramework>
+    <TargetPlatformMinVersion>$(StarHubMinimumWindowsVersion)</TargetPlatformMinVersion>
+    <SupportedOSPlatformVersion>$(StarHubMinimumWindowsVersion)</SupportedOSPlatformVersion>
+    <Platforms>x64</Platforms>
+    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+    <UseWinUI>true</UseWinUI>
+    <WindowsPackageType>None</WindowsPackageType>
+    <EnableMsixTooling>true</EnableMsixTooling>
+    <WindowsAppSDKSelfContained>true</WindowsAppSDKSelfContained>
+    <SelfContained>true</SelfContained>
+    <PublishTrimmed>false</PublishTrimmed>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <ApplicationIcon>starhub.ico</ApplicationIcon>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+  </PropertyGroup>
+  <ItemGroup>
+    <Content Include="starhub.ico" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="../Assets/NotoSansSC-Regular.ttf;../Assets/NotoSansSC-OFL.txt;../Assets/PDFsharp-LICENSE.txt"
+          Link="Assets/%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
+    <ProjectReference Include="../StarHub.Platform/StarHub.Platform.csproj" />
+    <PackageReference Include="NAudio.WinMM" Version="3.3.0" />
+    <PackageReference Include="Markdig" Version="1.6.0" />
+    <PackageReference Include="Microsoft.WindowsAppSDK.WinUI" Version="2.7.0" />
+    <PackageReference Include="Microsoft.Windows.SDK.BuildTools" Version="10.0.26100.9457" />
+  </ItemGroup>
+</Project>

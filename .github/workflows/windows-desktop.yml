@@ -1,0 +1,65 @@
+name: Windows desktop
+
+on:
+  workflow_dispatch:
+    inputs:
+      live:
+        description: Verify the OpenAI API and Windows operations with the configured test key
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-2025
+    timeout-minutes: 25
+    defaults:
+      run:
+        working-directory: desktop
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-dotnet@v5
+        with:
+          global-json-file: desktop/global.json
+      - name: Test provider streams, storage and scheduled work
+        shell: pwsh
+        run: dotnet test StarHub.Tests/StarHub.Tests.csproj -c Release
+      - name: Build installer
+        shell: pwsh
+        run: ./build-windows.ps1
+      - name: Verify install, desktop launch, background worker and uninstall
+        shell: pwsh
+        run: ./verify-windows.ps1
+      - uses: actions/upload-artifact@v7
+        with:
+          name: starhub-windows-x64
+          path: desktop/out/release/
+          if-no-files-found: error
+          retention-days: 5
+
+  live:
+    if: inputs.live && github.repository == 'zhongjiehuang1/Star_Hub'
+    needs: build
+    runs-on: windows-2025
+    timeout-minutes: 12
+    environment: starhub-windows-live
+    defaults:
+      run:
+        working-directory: desktop
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-dotnet@v5
+        with:
+          global-json-file: desktop/global.json
+      - name: Build live Windows checks
+        shell: pwsh
+        run: dotnet build StarHub.LiveChecks -c Release -f net10.0-windows10.0.22000.0
+      - name: Verify the real OpenAI API and Windows operations
+        shell: pwsh
+        env:
+          STARHUB_OPENAI_TEST_KEY: ${{ secrets.STARHUB_OPENAI_TEST_KEY }}
+        run: dotnet run --project StarHub.LiveChecks -c Release -f net10.0-windows10.0.22000.0 --no-build

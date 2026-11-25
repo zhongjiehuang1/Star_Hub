@@ -1,0 +1,158 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="theme-color" content="#f8f9fc"><meta name="description" content="Star Hub: a simple workspace for conversations with different AI models.">
+  <title>Star Hub</title>
+  <link rel="icon" href="icon.svg" type="image/svg+xml"><link rel="stylesheet" href="app.css?v=20261124-reasoning-picker"><link rel="stylesheet" href="workspace-refresh.css?v=20261125-desktop-account">
+  <link rel="stylesheet" href="vendor/katex/katex.min.css"><link rel="stylesheet" href="richtext.css?v=20261124-explanations"><script src="vendor/katex/katex.min.js" defer></script><script src="vendor/marked.min.js" defer></script><script src="vendor/purify.min.js" defer></script><script src="markdown.js?v=20261124-inline-diagrams" defer></script><script src="visuals.js?v=20261124-chat-context" defer></script>
+  <script src="provider-media.js?v=20261117-edit-source" defer></script><script src="storage.js?v=20261117-map-v2" defer></script><script src="i18n-data.js?v=20261124-desktop-download" defer></script><script src="i18n.js?v=20261124-layout" defer></script>
+  <link rel="stylesheet" href="vendor/leaflet/leaflet.css?v=1.9.4"><link rel="stylesheet" href="city-maps.css?v=20261117-raster"><script src="vendor/leaflet/leaflet.js?v=1.9.4" defer></script><script src="city-maps.js?v=20261117-raster" defer></script><script src="provider-operations.js?v=20261124-sidebar-tidy" defer></script><script src="image-intent.js?v=20261124-context-followups" defer></script><script src="image-edit-input.js?v=20261117-followup" defer></script><script src="app.js?v=20261125-desktop-account" defer></script><script src="account.js?v=20261125-desktop-account-2" defer></script><script src="session-idle.js?v=20261124-countdown" defer></script><script src="chat-pages.js?v=5e406258c955" defer></script><script src="cloud.js?v=20261124-reply-recovery" defer></script><script src="memory.js?v=20261124-memory-overview" defer></script><script src="replies.js?v=20261104-workspace" defer></script><script src="api-links.js?v=20261121-models" defer></script><script src="realtime-search-ui.js?v=20261117-weather-source" defer></script><script src="advanced.js?v=20261124-reasoning-picker" defer></script>
+  <script src="experience.js?v=20261124-reasoning-picker" defer></script><script src="cookie-settings.js?v=20261105" defer></script>
+  <script src="gentle-motion.js?v=6ae1723e0859" defer></script><script src="workspace-ui.js?v=20261124-desktop-download" defer></script><script src="realtime-disclosure.js?v=20261117" defer></script>
+  <link rel="stylesheet" href="intelligence.css?v=1"><script src="intelligence.js?v=2" defer></script>
+  <script src="desktop-connection.js?v=2" defer></script>
+</head>
+<body data-layout="floating">
+<div id="sessionNotice" class="session-notice" role="status" aria-live="polite" hidden></div>
+  <aside class="sidebar" id="sidebar" inert>
+    <a class="brand" href="./" aria-label="Star Hub home"><span class="brand-mark" aria-hidden="true">✳</span>Star Hub</a>
+    <button id="sidebarClose" class="sidebar-close" type="button" aria-label="Close sidebar">×</button>
+    <div class="history-search-shell" data-no-i18n><label for="historySearch" id="historySearchLabel">Your chats</label><input id="historySearch" type="search" autocomplete="off" placeholder="Search loaded chat titles" aria-describedby="historySearchHelp"><span id="historySearchHelp" class="sr-only">Search titles in chats already loaded on this device.</span></div>
+    <nav id="history" class="history" aria-label="Conversation list"></nav><p id="historyNoMatches" class="history-empty" role="status" data-no-i18n hidden>No matching loaded chats.</p>
+    <details id="connectionSettings"><summary>Service settings <span id="connectionState">Not connected</span></summary>
+    <div class="settings">
+      <button id="browseModels" class="catalog-launch" type="button" disabled>Browse models</button>
+      <div class="connection-compact"><button id="connectProvider" type="button">Connect a service</button></div>
+      <select id="provider" hidden disabled></select>
+      <label for="modelDirection">Create with</label><select id="modelDirection"><option value="general">General · text &amp; images</option><option value="image">Images</option><option value="video">Video</option><option value="voice">Voice</option></select>
+      <label for="model">Choose a model</label><select id="model" disabled><option value="">Choose a provider first</option></select>
+      <label for="task">Task type</label><select id="task"></select>
+      <input id="apiKey" type="password" autocomplete="off" hidden>
+    </div>
+    </details>
+    <div class="sidebar-tools"><button type="button" id="openLibrary" class="settings-button" hidden>File library</button><button type="button" id="openIntelligence" class="settings-button" data-no-i18n hidden>Star Intelligence</button></div>
+    <div class="sidebar-footer"><span class="privacy-icon">◇</span><div><span id="privacyHeading">Guest session</span><small id="privacyDetail">Sign in to save chats and files to your account</small><small><span>IP geolocation by </span><a href="https://db-ip.com" target="_blank" rel="noopener noreferrer" data-no-i18n>DB-IP</a></small><button id="cookieSettings" class="cookie-settings-link" type="button">Cookie settings</button></div></div>
+  </aside>
+  <main><output id="workspaceActivity" role="status" aria-live="polite" hidden></output><div id="clusterUnavailable" class="cluster-unavailable" role="status" hidden>服务器故障，请等待恢复</div>
+    <header class="topbar">
+      <div class="header-left">
+        <button id="menuToggle" class="icon-button workspace-menu" type="button" aria-label="Open sidebar" aria-controls="sidebar" aria-expanded="false">☰</button>
+        <button id="newChat" class="icon-button workspace-new" type="button" aria-label="New chat" title="New chat" aria-keyshortcuts="Meta+K Control+K">＋</button>
+        <button id="quickModel" class="quick-model" type="button" aria-label="Choose a model"><span id="activeProvider" class="provider-badge">Star Hub</span><span id="quickModelName" data-no-i18n>Choose a model</span><span aria-hidden="true">⌄</span></button>
+      </div>
+      <div class="header-right">
+        <button type="button" id="accountButton" class="text-button">Sign in</button>
+        <a class="icon-button" id="desktopDownload" href="downloads/" aria-label="Download desktop app" title="Download desktop app" aria-haspopup="dialog">
+          <svg aria-hidden="true" width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12v5H3V5h8m1 12v4m-4 0h8m1-17v8m-3-3 3 3 3-3"/></svg>
+        </a>
+        <details id="workspaceActions" class="workspace-actions">
+          <summary class="icon-button" aria-label="Workspace options" title="Workspace options">⋯</summary>
+          <div class="workspace-actions-panel">
+            <div class="workspace-control"><label for="workspaceLayout">Layout</label><select id="workspaceLayout"><option value="floating">Floating</option><option value="docked">Docked</option></select></div>
+            <div class="workspace-actions-row">
+              <button id="language" type="button" class="language-toggle" lang="zh" aria-label="Switch interface language to 中文" data-no-i18n>中文</button>
+              <button class="text-button" id="exportChat" title="Export current conversation">Export chat ↗</button>
+              <button class="text-button" id="quickIntelligence" type="button" data-no-i18n hidden>Star Intelligence</button>
+              <button type="button" id="accountLogout" class="text-button" hidden>Sign out</button>
+            </div>
+            <div class="workspace-status">
+              <span id="serverBadge" class="server-badge" role="status" aria-live="polite" data-no-i18n>Connecting to server</span>
+              <span id="accountSessionBadge" class="account-session-badge" role="group" aria-label="Account session" hidden><span class="session-countdown"></span><span class="session-state" role="status"></span></span>
+            </div>
+          </div>
+        </details>
+        <span class="service-status" id="serviceStatus"><i></i> Connecting</span>
+      </div>
+    </header>
+    <div class="conversation" id="conversation">
+      <section class="welcome" id="welcome">
+        <div class="hero-symbol" aria-hidden="true">✳</div>
+        <h1>Start a conversation</h1>
+        <div class="prompt-grid">
+          <button class="prompt-card" type="button" data-prompt="Help me turn a rough idea into an actionable plan. Start by asking me three key questions."><span class="card-icon lavender" aria-hidden="true">✦</span><strong>Explore an idea</strong></button>
+          <button class="prompt-card" type="button" data-prompt="Help me make a piece of writing clearer and more natural. Ask me for the original text and its intended use first."><span class="card-icon peach" aria-hidden="true">✎</span><strong>Write together</strong></button>
+          <button class="prompt-card" type="button" data-prompt="I want to learn a new concept. Ask what I want to understand, then explain it step by step with simple examples."><span class="card-icon mint" aria-hidden="true">⌘</span><strong>Understand a topic</strong></button>
+        </div>
+      </section>
+      <section class="messages" id="messages" aria-label="Chat messages" aria-live="polite"></section>
+    </div>
+    <div class="composer-area"><div id="error" class="error" role="alert" hidden></div><div id="busyStatus" class="busy-status" role="status" hidden>Waiting for the model…</div>
+      <div id="taskControls" class="task-controls" hidden>
+        <details id="taskOptions" open><summary>Voice settings</summary>
+        <p id="taskHelp"></p><div id="generationOptions" class="generation-options"></div>
+        <label id="fileLabel" hidden>Reference file (up to 4 MB)<input id="inputFile" type="file" accept="image/png,image/jpeg,image/webp"></label>
+        <label id="documentsLabel" hidden>Documents to rank, one per line<textarea id="documents" rows="3" maxlength="100000"></textarea></label>
+        <label id="questionLabel" hidden>Yes/no question<input id="question" maxlength="4000" placeholder="For example: Does this feedback describe a software defect?"></label>
+        </details>
+      </div>
+      <section id="realtimePanel" class="advanced-panel" hidden aria-labelledby="realtimeTitle">
+        <details id="realtimeDetails"><summary class="realtime-summary"><span id="realtimeTitle">Live voice</span><span id="realtimeState" role="status">Disconnected</span></summary>
+        <p id="realtimeHelp">The microphone starts automatically after connecting. Speech is sent continuously and pauses trigger a reply.</p>
+        <div class="realtime-microphone"><label for="realtimeMicrophone">Microphone</label><select id="realtimeMicrophone" aria-describedby="realtimeMicrophoneHelp"><option value="">System default microphone</option></select><small id="realtimeMicrophoneHelp">You can change the microphone during a session. Device names appear after microphone access is allowed.</small><small>If no sound is detected, check your system input device and volume. For Chinese transcription, choose Chinese in Voice settings before connecting.</small></div>
+        <div class="panel-actions"><button id="connectRealtime" type="button">Connect live model</button><button id="recordRealtime" type="button" disabled>Turn on microphone</button><button id="interruptRealtime" type="button" disabled>Interrupt reply</button><button id="endRealtime" type="button" disabled>End connection</button></div>
+        </details>
+        <div id="realtimeMicLevel" role="status" aria-live="polite" hidden></div><p id="realtimeNotice" role="status"></p><div id="realtimeRecovery" class="realtime-recovery" hidden><p>Previous live session is unconfirmed. Starting a separate session may incur another charge.</p><div class="panel-actions"><button id="realtimeCheckPrevious" type="button">Check previous request</button><button id="realtimeStartSeparate" type="button">Start new session (may charge again)</button></div><p id="realtimeRecoveryStatus" role="status"></p></div>
+      </section>
+      <div id="searchControls" class="search-controls"><label><input id="webSearch" type="checkbox" checked aria-describedby="searchHelp"> <span data-no-i18n id="searchLabel">Web search</span></label><small data-no-i18n id="searchHelp">The model may search when needed. Searches can incur extra charges.</small></div>
+      <form id="chatForm" class="composer"><div id="chatAttachments" class="chat-attachments" aria-live="polite" data-no-i18n hidden></div><textarea id="prompt" rows="1" maxlength="30000" placeholder="What would you like to explore?" aria-label="Enter a message" required></textarea><div class="composer-bottom"><div class="composer-leading"><button id="attachChatFile" class="attach-chat-file" type="button" aria-label="Attach images" title="Attach PNG, JPEG or WebP images (up to 4 MB total)" hidden>＋</button><span id="reasoningControl" class="reasoning-control" hidden><span class="reasoning-mark" aria-hidden="true"></span><select id="effort" aria-label="Reasoning effort" disabled><option value="default">Provider default</option></select></span><span id="modelHint">Connect a model to get started</span></div><button type="submit" id="send" aria-label="Send message" disabled>↑</button></div></form>
+      <p class="disclaimer">AI can make mistakes. Provider usage may incur charges.</p>
+    </div>
+  </main>
+<dialog id="desktopDownloadDialog" aria-labelledby="desktopDownloadTitle">
+  <div class="desktop-download-heading">
+    <h2 id="desktopDownloadTitle">Star Hub for Windows</h2>
+    <form method="dialog"><button class="icon-button" type="submit" aria-label="Close download options">×</button></form>
+  </div>
+  <p>Windows 10 22H2 / Windows 11 · x64</p>
+  <p>Open the downloaded setup file to install and start Star Hub.</p>
+  <div class="desktop-download-actions">
+    <a class="desktop-install" href="downloads/windows/preview/StarHub-Windows-x64-Setup.exe" download>Download for Windows</a>
+    <a class="desktop-details" href="downloads/">Installation details</a>
+  </div>
+</dialog>
+<dialog id="intelligenceDialog" class="intelligence-dialog" aria-labelledby="intelligenceTitle" data-no-i18n>
+  <div class="intelligence-shell">
+    <header class="intelligence-header">
+      <span>Star Intelligence</span>
+      <button id="closeIntelligence" class="icon-button" type="button" aria-label="Close">×</button>
+    </header>
+    <h2 id="intelligenceTitle" tabindex="-1">What’s worth doing now?</h2>
+    <div id="intelligenceAction"></div>
+    <form id="intelligenceFeedback" hidden>
+      <label for="intelligenceFeedbackText"></label>
+      <textarea id="intelligenceFeedbackText" rows="3" maxlength="2000" required></textarea>
+      <div class="intelligence-controls"><button type="submit" id="intelligenceSendFeedback"></button></div>
+    </form>
+    <p id="intelligenceMessage" role="status" aria-live="polite"></p>
+    <div id="intelligenceDetails"></div>
+  </div>
+</dialog>
+<dialog id="modelLibrary" aria-labelledby="libraryTitle">
+    <div class="library-header"><div><span class="eyebrow">MODEL ATLAS</span><h2 id="libraryTitle">Find your model</h2><p id="libraryStats"></p></div><button id="closeLibrary" class="icon-button" aria-label="Close model library">×</button></div>
+    <div class="library-layout"><aside class="library-filters">
+      <label for="libraryDirection">Create with</label><select id="libraryDirection"><option value="general">General · text &amp; images</option><option value="image">Images</option><option value="video">Video</option><option value="voice">Voice</option></select>
+    </aside><section class="library-content"><div class="library-results"><span id="resultCount" role="status"></span><span>Official APIs only</span></div><div id="modelCards" class="model-cards"></div><div class="pagination"><button id="prevPage">← Previous</button><span id="pageInfo"></span><button id="nextPage">Next →</button></div></section></div>
+    <footer class="library-footer" id="coverageNotice"></footer>
+  </dialog>
+  <dialog id="detailDialog" aria-labelledby="detailTitle"><div class="detail-header"><h2 id="detailTitle"></h2><button id="closeDetails" class="icon-button" aria-label="Close model details">×</button></div><div id="detailContent"></div><button id="useDetailModel" class="new-chat">Use this model →</button></dialog>
+<dialog id="apiDialog" aria-labelledby="apiTitle"><div class="detail-header"><div><span class="eyebrow">API DIRECTORY</span><h2 id="apiTitle">API addresses &amp; keys</h2></div><button id="closeApis" class="icon-button" aria-label="Close API directory">×</button></div><p class="api-explanation">These are the actual endpoints used by Star Hub. Only manufacturer-owned APIs are called; use the matching provider's key. POST endpoints may show an error when opened as a web page. Send requests from this workspace.</p><div id="apiCurrent"></div><h3 class="api-directory-title">All official providers</h3><p class="field-help">Expand a provider to view full addresses, key management and official documentation.</p><div id="apiDirectory"></div></dialog>
+<dialog id="setupDialog" aria-labelledby="setupTitle">
+  <div class="detail-header"><div><span class="eyebrow">GET CONNECTED</span><h2 id="setupTitle">Connect your first model</h2></div><button id="closeSetup" class="icon-button" type="button" aria-label="Close connection guide">×</button></div>
+  <div class="setup-language"><button id="setupLanguage" type="button" class="language-toggle" lang="zh" aria-label="Switch interface language to 中文" data-no-i18n>中文</button></div>
+  <ol id="setupProgress" class="setup-steps"><li id="setupStep1">1 Choose provider</li><li id="setupStep2">2 Add key</li><li id="setupStep3">3 Check connection</li></ol>
+  <section id="setupChoose"><p>Use the manufacturer's official API. Usage is billed to your official account.</p><label for="setupProvider">Official provider</label><select id="setupProvider"></select><p id="setupProviderNote" class="field-help"></p></section>
+  <section id="setupKeyStep" hidden><p id="setupKeyHelp">Create an API key in the official console and paste it below. It stays in this tab through refreshes and is cleared when the tab closes.</p><a id="setupKeyLink" target="_blank" rel="noopener noreferrer">Open official key management ↗</a><p id="setupKeyAddress" class="field-help"></p><label for="setupKey">API Key</label><div class="key-field"><input id="setupKey" type="password" maxlength="4096" autocomplete="off" spellcheck="false" placeholder="Paste your full official API key"><button id="setupToggleKey" type="button" aria-label="Show API key">Show</button></div><button id="accountSaveKey" type="button" class="settings-button" hidden>Manage API keys</button></section>
+  <section id="setupCheckStep" hidden><p>This check only reads the official model list. It sends no chat or generation task. Passing means the API accepted the key; access to a specific model is confirmed when you use it.</p><p id="setupCheckAddress" class="field-help" data-no-i18n></p><p id="setupModel" class="setup-model"></p><p id="setupCheckStatus" role="status"></p><button id="checkConnection" type="button">Check again</button></section>
+  <details id="providerRequestHistory"><summary>Request history</summary><section id="providerPendingOperations" aria-label="Unconfirmed requests" hidden></section></details>
+  <p id="setupError" class="error" role="alert" hidden></p>
+  <div class="setup-actions"><button id="skipSetup" type="button" class="text-button">Set up later</button><div><button id="setupBack" type="button" hidden>Back</button><button id="setupNext" type="button">Next</button><button id="finishSetup" type="button" hidden>Start chatting</button></div></div>
+</dialog>
+<dialog id="accountDialog"><form id="accountForm"><h2>Sign in</h2><p>Registration is closed. For details, <a id="accountContactLink" href="https://www.zhongjiehuang.com/contact/">contact the developer</a>.</p><label>Email<input id="accountEmail" type="email" autocomplete="username" required></label><label>Password<input id="accountPassword" type="password" autocomplete="current-password" required></label><p id="accountError" role="alert"></p><button id="accountSubmit" type="submit">Sign in</button><button id="accountClose" type="button">Cancel</button></form></dialog><dialog id="accountSettings"><h2>Account settings</h2><p id="accountProfile"></p><details id="passwordSettings" class="account-disclosure"><summary>Change password</summary><form id="passwordForm"><label>Current password<input id="oldPassword" type="password" autocomplete="current-password" required></label><label>New password (12–256 characters)<input id="newPassword" type="password" autocomplete="new-password" minlength="12" maxlength="256" required></label><button type="submit">Change password</button></form></details><details id="keyVault" class="account-disclosure"><summary>API key vault</summary><p>Store multiple keys, choose the active key for each provider, or remove one. A key can only be stored once per account.</p><form id="keyForm"><label>Provider<select id="accountProvider"></select></label><label>Key name<input id="keyLabelInput" maxlength="120" required></label><label>New API key<input id="accountKey" type="password" autocomplete="off" required></label><button type="submit">Add and select key</button></form><div id="accountKeyList"></div></details><p id="settingsStatus" role="status"></p><button id="closeAccountSettings" type="button">Close</button></dialog><dialog id="importDialog"><h2>Import guest conversations?</h2><p>Guest conversations remain separate unless you choose to add them to this account.</p><label><input id="importCheck" type="checkbox"> Add guest conversations and their attachments to this account</label><p><button id="importConfirm" type="button">Continue</button></p></dialog><dialog id="libraryDialog" aria-labelledby="fileLibraryTitle">
+  <div class="file-library-shell">
+    <header class="file-library-header"><div><h2 id="fileLibraryTitle">File library</h2><p id="libraryUsage"></p></div><div class="file-library-toolbar"><label class="file-library-search"><span aria-hidden="true">⌕</span><input id="fileLibrarySearch" type="search" maxlength="120" placeholder="Search files" aria-label="Search files"></label><button id="createLibraryFolder" class="file-library-new-folder" type="button">New folder</button><label class="file-library-upload">＋ <span>Upload files</span><input id="libraryUpload" type="file" multiple accept="image/png,image/jpeg,image/webp,audio/mpeg,audio/wav,audio/x-wav,audio/mp4,audio/webm,application/pdf,text/plain"></label><button id="closeFileLibrary" class="file-library-close" type="button" aria-label="Close file library">×</button></div></header>
+    <div class="file-library-body"><nav class="file-library-nav" aria-label="File library views"><button id="fileLibraryAll" class="active" type="button" aria-pressed="true">All files</button><button id="fileLibraryTrash" type="button" aria-pressed="false">Trash</button><p>PNG, JPEG, WebP, audio, PDF and TXT · Up to 4 MiB per file</p></nav><section class="file-library-main"><div id="fileLibraryBreadcrumb" class="file-library-breadcrumb" hidden><button id="fileLibraryRoot" type="button">All files</button><span>›</span><strong id="fileLibraryFolderName"></strong></div><p id="libraryMessage" role="status"></p><div class="file-library-columns" aria-hidden="true"><span>Name</span><span>Added</span><span>Size</span><span></span></div><div id="libraryFiles" aria-busy="false"></div><nav class="file-library-pagination" aria-label="File pages"><button id="fileLibraryPrevious" type="button" disabled>← Previous</button><span id="fileLibraryPageInfo" aria-live="polite"></span><button id="fileLibraryNext" type="button" disabled>Next →</button></nav></section></div>
+    <footer class="file-library-footer"><span id="fileLibrarySelection" aria-live="polite"></span><div class="file-library-footer-actions"><button id="trashSelectedFiles" type="button" disabled>Move selected to trash</button><button id="useLibraryFiles" type="button">Use selected in new chat</button></div></footer>
+  </div>
+</dialog><section id="cookieNotice" class="cookie-notice" role="dialog" aria-labelledby="cookieTitle" aria-describedby="cookieDescription" hidden><div><h2 id="cookieTitle">Cookie settings</h2><p id="cookieDescription">Necessary cookies support sign-in and temporary sessions. This site does not currently use analytics or advertising cookies. Language preferences and a tab identifier are stored in your browser.</p><label><input type="checkbox" checked disabled> Necessary cookies (required)</label></div><button id="acceptCookies" type="button">Use necessary cookies</button></section></body>
+</html>
