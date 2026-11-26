@@ -103,8 +103,17 @@ $('accountForm').onsubmit=async e=>{e.preventDefault();$('accountSubmit').disabl
  }
  if(reauthEmail){try{const email=reauthEmail;if($('accountEmail').value.trim().toLowerCase()!==email.toLowerCase())throw Error(t('请使用原账户重新登录，以保存当前页面的更改。'));await accountRequest({action:'login',email,password:$('accountPassword').value});$('accountPassword').value='';if(!await restoreAccount()||accountEmail!==email)throw Error(t('无法恢复账户，请重试。'));reauthEmail='';cloudFailed=false;await saveCloudChats();$('accountDialog').close();showError('');if(typeof StarSessionIdle!=='undefined'){StarSessionIdle.notice('登录成功');StarSessionIdle.changed();}}catch(error){$('accountError').textContent=errorText(error.message);}finally{$('accountSubmit').disabled=typeof clusterAvailable!=='undefined'&&!clusterAvailable;}return;}
  const priorKeys=new Map(keys);try{const guest=accountEmail?[]:chats;await accountRequest({action:'login',email:$('accountEmail').value,password:$('accountPassword').value});$('accountPassword').value='';await restoreAccount(true);if(!accountEmail)throw Error('Could not load account.');cloudHydrating=true;updateConnection();$('accountDialog').close();await accountChatsOnLogin(guest);if(ready)selectProvider();if(typeof StarSessionIdle!=='undefined'){StarSessionIdle.notice('登录成功');StarSessionIdle.changed();}}catch(error){if(accountEmail&&!cloudReady){try{await accountRequest({action:'logout'});}catch{}accountEmail='';accountDisplayName='';keys.clear();for(const [p,k] of priorKeys)keys.set(p,k);StarStore.saveKeys(keys);accountDisplay();if(ready)selectProvider();}if($('accountDialog').open)$('accountError').textContent=error.message;else showError(error.message);}finally{cloudHydrating=Boolean(current?.hydrating);updateConnection();$('accountSubmit').disabled=typeof clusterAvailable!=='undefined'&&!clusterAvailable;}};
+let accountSigningOut=false;
 function accountLogoutError(error){return error.code==='INSUFFICIENT_STORAGE'?t('服务器存储空间不足，未能退出登录；当前账户仍保持登录，请稍后重试。'):error.message;}
-$('accountLogout').onclick=async()=>{try{await saveCloudChats();await accountRequest({action:'logout'});cloudReady=false;cloudFailed=false;const guest=StarStore.loadHistory();chats=guest?.chats||[];current=undefined;if(chats.length)activateChat(chats.find(c=>c.id===guest.currentId)||chats[0]);else newChat();keys.clear();StarStore.setGuestMode(true);StarStore.saveKeys(keys);accountEmail='';accountDisplayName='';accountDisplay();if(ready)selectProvider();if(typeof StarSessionIdle!=='undefined'){StarSessionIdle.sync();StarSessionIdle.notice('已退出登录');StarSessionIdle.changed();}}catch(error){showError(accountLogoutError(error));}};
+$('accountLogout').onclick=async()=>{
+ if(accountSigningOut)return;
+ accountSigningOut=true;
+ try{
+  await saveCloudChats();
+  if(typeof desktopRefreshFlight!=='undefined')await desktopRefreshFlight;
+  await accountRequest({action:'logout'});cloudReady=false;cloudFailed=false;const guest=StarStore.loadHistory();chats=guest?.chats||[];current=undefined;if(chats.length)activateChat(chats.find(c=>c.id===guest.currentId)||chats[0]);else newChat();keys.clear();StarStore.setGuestMode(true);StarStore.saveKeys(keys);accountEmail='';accountDisplayName='';accountDisplay();if(ready)selectProvider();if(typeof StarSessionIdle!=='undefined'){StarSessionIdle.sync();StarSessionIdle.notice('已退出登录');StarSessionIdle.changed();}}catch(error){showError(accountLogoutError(error));}
+ finally{accountSigningOut=false;}
+};
 $('accountSaveKey').onclick=()=>{const key=$('setupKey').value;$('setupDialog').close();openAccountSettings(true);$('accountKey').value=key;};
 function openAccountSettings(showKeys=false){
  $('keyVault').open=showKeys;

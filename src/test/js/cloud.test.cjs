@@ -527,3 +527,67 @@ test('cloud persistence retains an unfinished or failed transcript guard without
  }
  assert.equal(f.run("cleanMessage({role:'user',content:'滁州地图'}).mapTranscriptFailed"),undefined);
 });
+
+test('foreground and sync readers share an in-flight page and can edit independent results',async()=>{
+ let finish;
+ const f=fixture(()=>new Promise(ok=>{finish=ok;}),undefined,{structuredClone});
+ const foreground=f.run("workspaceRequest({action:'listChats',offset:0,paginationProtocol:1})");
+ const sync=f.run("sendWorkspaceRequest({paginationProtocol:1,action:'listChats',offset:0},accountEmail,accountIdentityRevision,true)");
+ assert.equal(f.requests.length,1);
+ finish({chats:[{title:'original'}]});
+ const [a,b]=await Promise.all([foreground,sync]);
+ b.chats[0].title='edited';
+ assert.equal(a.chats[0].title,'original');
+ assert.equal(b.confirmedDurability,'dual');
+ const later=f.run("workspaceRequest({action:'listChats',offset:0,paginationProtocol:1})");
+ assert.equal(f.requests.length,2);
+ finish({chats:[]});await later;
+});
+
+test('page reads are isolated across account changes and write boundaries',async()=>{
+ const gates=[];
+ const f=fixture(request=>request.action==='listChats'?new Promise(ok=>gates.push(ok)):{revision:2},undefined,{structuredClone});
+ const read=()=>f.run("workspaceRequest({action:'listChats',offset:0,paginationProtocol:1})");
+ const old=read(), joined=read();
+ f.run('accountIdentityRevision++');
+ const sameEmailNewSession=read();
+ await f.run("sendWorkspaceRequest({action:'deleteChat',id:'gone'},accountEmail)");
+ const afterWrite=read();
+ assert.equal(gates.length,3);
+ gates.forEach(resolve=>resolve({chats:[]}));
+ const results=await Promise.allSettled([old,joined,sameEmailNewSession,afterWrite]);
+ assert.deepEqual(results.map(x=>x.status),['rejected','rejected','fulfilled','fulfilled']);
+ assert.ok(results.slice(0,2).every(x=>x.reason.code==='ACTOR_CHANGED'));
+});
+
+test('login schedules the first sync from the loaded catalog and skips unchanged later pages',async()=>{
+ const snapshot='a'.repeat(64),item={id:'win-sample',title:'Synced',revision:1,data:{messages:[]}};
+ const page={snapshot,paginationProtocol:1,total:2,nextOffset:1,chats:[item]};
+ const timers=new Map(),events={};
+ const win={addEventListener:(name,fn)=>{events[name]=fn;},setTimeout:(fn,delay)=>{timers.set(fn,delay);return fn;},clearTimeout:id=>timers.delete(id)};
+ const f=fixture(r=>r.offset===0?{...page}:{...page,nextOffset:null,chats:[{...item,id:'win-other'}]},undefined,
+   {window:win,StarChatPages:require('../../main/webapp/chat-pages.js'),accountSigningOut:false,busy:false,realtimeActive:false,cloudHydrating:false});
+ f.context.bundle={...page,confirmedDurability:'dual'};
+ await f.run('loadCloudChats(bundle);');
+ f.run('cloudReady=true');
+ events.focus();
+ assert.deepEqual(f.requests.map(x=>x.offset),[1]);
+ assert.deepEqual([...timers.values()],[5000]);
+ await f.run('refreshDesktopChats()');
+ assert.deepEqual(f.requests.map(x=>x.offset),[1,0]);
+});
+
+test('different snapshots read separately and a failed shared request can be loaded fresh',async()=>{
+ const gates=[];
+ const f=fixture(()=>new Promise(resolve=>gates.push(resolve)),undefined,{structuredClone});
+ const read=snapshot=>f.run("workspaceRequest({action:'listChats',offset:4,paginationProtocol:1,snapshot:"+JSON.stringify(snapshot)+"})");
+ const a='a'.repeat(64),b='b'.repeat(64);
+ const pending=Promise.allSettled([read(a),read(a),read(b)]);
+ assert.equal(gates.length,2);
+ gates[0]({__http:409,body:{code:'CHAT_CATALOG_CHANGED'}});
+ gates[1]({chats:[]});
+ assert.deepEqual((await pending).map(x=>x.status),['rejected','rejected','fulfilled']);
+ const fresh=read(a);
+ assert.equal(gates.length,3);
+ gates[2]({chats:[]});await fresh;
+});

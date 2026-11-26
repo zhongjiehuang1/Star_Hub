@@ -43,7 +43,29 @@ function workspaceActivity(message,done=false){
  element.textContent=message||'';element.hidden=!message&&workspaceActivityCount===0;
  element.setAttribute('aria-busy',workspaceActivityCount>0?'true':'false');
 }
+const pendingChatPages=new Map();
 async function sendWorkspaceRequest(data,expectedEmail,epoch=accountIdentityRevision,quiet=false){
+ workspaceOwner(expectedEmail,epoch);
+ if(data.action==='listChats'){
+  const key=JSON.stringify([expectedEmail,epoch,Object.keys(data).sort().map(name=>[name,data[name]])]);
+  const existing=pendingChatPages.get(key);
+  if(existing){
+   const page=await existing;
+   workspaceOwner(expectedEmail,epoch);
+   // Each consumer can hydrate and edit its own copy of the returned messages.
+   return Object.defineProperty(structuredClone(page),'confirmedDurability',{value:page.confirmedDurability});
+  }
+  const pending=performWorkspaceRequest(data,expectedEmail,epoch,quiet);
+  pendingChatPages.set(key,pending);
+  try{return await pending;}
+  finally{if(pendingChatPages.get(key)===pending)pendingChatPages.delete(key);}
+ }
+ const changesChats=data.action==='saveChat'||data.action==='deleteChat';
+ if(changesChats)pendingChatPages.clear();
+ try{return await performWorkspaceRequest(data,expectedEmail,epoch,quiet);}
+ finally{if(changesChats)pendingChatPages.clear();}
+}
+async function performWorkspaceRequest(data,expectedEmail,epoch,quiet){
  workspaceOwner(expectedEmail,epoch);
  // Freeze the exact body and actor before joining this tab's existing guest
  // queue. Retry only an explicit pre-mutation memory rejection, never unknown
@@ -82,7 +104,28 @@ async function cloudUpload(data,name){const comma=data.indexOf(','),mime=data.sl
 async function readCloudFile(id){const f=await workspaceRequest({action:'readFile',id});return {...f,url:`data:${f.mime};base64,${f.data}`};}
 async function uploadSubmittedFiles(data,files,expectedEmail=accountEmail,active=()=>true){const epoch=accountIdentityRevision;function check(){workspaceOwner(expectedEmail,epoch);if(!active())throw Error('The original file conversation changed.');}check();const ids=[];for(let i=0;i<data.length;i++){check();const key=data[i];if(librarySelection.has(key))ids.push(librarySelection.get(key));else{const id=await cloudUpload(key,files[i]?.name||`attachment-${i+1}`);check();ids.push(id);}}check();librarySelection.clear();return ids;}
 async function hydrateChat(c){const email=accountEmail,epoch=accountIdentityRevision;workspaceOwner(email,epoch);for(const m of c.messages){workspaceOwner(email,epoch);if(m.fileIds?.length){let list=[];for(const id of m.fileIds){try{const file=await readCloudFile(id);workspaceOwner(email,epoch);list.push(file.url);}catch(error){workspaceOwner(email,epoch);m.attachmentOmitted=true;}}if(m.imageCount){m.images=list.slice(0,m.imageCount);m.attachments=list.slice(m.imageCount);}else m.attachments=list;}if(m.mediaRefs?.length)m.mediaRefs=StarProviderMedia.references(m.mediaRefs);if(m.imageSaveFailed)m.warning=t('图片已生成，但未能保存到文件库；请在刷新前下载图片。');}workspaceOwner(email,epoch);c.hydrated=true;}
-async function loadCloudChats(firstPage=null,readPage=workspaceRequest){const owner=accountEmail,epoch=accountIdentityRevision;workspaceOwner(owner,epoch);const result=await StarChatPages.collect(readPage,()=>Boolean(owner)&&accountEmail===owner&&accountIdentityRevision===epoch,firstPage ?? (typeof consumeWorkspaceBootstrap==='function'?consumeWorkspaceBootstrap():null));workspaceOwner(owner,epoch);const resultChats=[];for(const item of result.chats){if(!item.data||!Array.isArray(item.data.messages))continue;const c={id:item.id,title:item.title,revision:item.revision,draft:item.data.draft||'',messages:item.data.messages};c.savedPayload=JSON.stringify({title:c.title,data:chatData(c)});c.savedDurability=result.confirmedDurability;c.hydrated=false;resultChats.push(c);}return resultChats;}
+async function loadCloudChats(firstPage=null,readPage=workspaceRequest){
+ const owner=accountEmail,epoch=accountIdentityRevision;
+ workspaceOwner(owner,epoch);
+ const initialPage=firstPage ?? (typeof consumeWorkspaceBootstrap==='function'?consumeWorkspaceBootstrap():null);
+ const result=await StarChatPages.collect(readPage,()=>Boolean(owner)&&accountEmail===owner&&accountIdentityRevision===epoch,initialPage);
+ workspaceOwner(owner,epoch);
+ const resultChats=[];
+ for(const item of result.chats){
+  if(!item.data||!Array.isArray(item.data.messages))continue;
+  const chat={id:item.id,title:item.title,revision:item.revision,draft:item.data.draft||'',messages:item.data.messages};
+  chat.savedPayload=JSON.stringify({title:chat.title,data:chatData(chat)});
+  chat.savedDurability=result.confirmedDurability;
+  chat.hydrated=false;
+  resultChats.push(chat);
+ }
+ if(readPage===workspaceRequest){
+  desktopSnapshot=result.snapshot;
+  desktopSnapshotEpoch=epoch;
+  scheduleDesktopRefresh();
+ }
+ return resultChats;
+}
 async function saveCloudChats(){if(!accountEmail||!cloudReady)return;if(cloudFailed)throw Error(t('云端保存失败。刷新前请导出此对话。'));const email=accountEmail,epoch=accountIdentityRevision,queuedChats=[...chats];await serialCloud(async()=>{workspaceOwner(email,epoch);for(const c of queuedChats){workspaceOwner(email,epoch);if(c.deleting||c.deleted||!chats.includes(c)||!c.messages.length)continue;const data=chatData(c),signature=JSON.stringify({title:c.title,data});if(c.savedPayload===signature)continue;try{const r=await workspaceRequest({action:'saveChat',id:c.id,title:c.title,data,revision:c.revision||0});workspaceOwner(email,epoch);c.revision=r.revision;c.savedPayload=signature;c.savedDurability=r.confirmedDurability;}catch(e){if(accountEmail===email&&accountIdentityRevision===epoch){if(!(e.status===429&&e.code==='MEMORY_BUSY'))cloudFailed=true;if(e.status===401)requestReauthentication(email);else showError(e.message+t('更改仍保留在当前页面。'));}throw e;}}});}
 async function saveCloudChatsConfirmed(expectedEmail,chatId){
  const epoch=accountIdentityRevision;
@@ -329,18 +372,32 @@ checkClusterHealth();
 setInterval(()=>{if(!document.hidden)checkClusterHealth();},15000);
 
 // Keep Windows conversations visible in an open account tab without interrupting editing.
-let readingDesktopChats = false;
+let desktopRefreshFlight=null, desktopRefreshTimer, nextDesktopRefresh=0;
+function scheduleDesktopRefresh(){
+  if(typeof window.setTimeout!=='function')return;
+  window.clearTimeout(desktopRefreshTimer);
+  nextDesktopRefresh=Date.now()+5000;
+  if(accountEmail)desktopRefreshTimer=window.setTimeout(refreshDesktopChats,5000);
+}
 let desktopSnapshot = '', desktopSnapshotEpoch = -1;
-async function refreshDesktopChats() {
-  if (document.hidden || !accountEmail || !cloudReady || busy || realtimeActive || cloudHydrating || readingDesktopChats) return;
+function refreshDesktopChats() {
+  if(desktopRefreshFlight)return desktopRefreshFlight;
+  if(!accountEmail)return;
+  if(document.hidden || !cloudReady || busy || realtimeActive || cloudHydrating || accountSigningOut){scheduleDesktopRefresh();return;}
+  desktopRefreshFlight=readDesktopChats().finally(()=>{desktopRefreshFlight=null;scheduleDesktopRefresh();});
+  return desktopRefreshFlight;
+}
+async function readDesktopChats() {
   const owner = accountEmail, epoch = accountIdentityRevision;
-  readingDesktopChats = true;
   try {
-    const readPage = data => sendWorkspaceRequest(data, owner, epoch, true);
+    const readPage = data => {
+      if(accountSigningOut)throw Error('Sign-out in progress.');
+      return sendWorkspaceRequest(data, owner, epoch, true);
+    };
     const firstPage = await readPage({action:'listChats',paginationProtocol:1,offset:0});
-    if (epoch === desktopSnapshotEpoch && firstPage.snapshot === desktopSnapshot) return;
+    if (accountSigningOut || (epoch === desktopSnapshotEpoch && firstPage.snapshot === desktopSnapshot)) return;
     const remote = await loadCloudChats(firstPage,readPage);
-    if (owner !== accountEmail || epoch !== accountIdentityRevision || busy || realtimeActive || !cloudReady) return;
+    if (owner !== accountEmail || epoch !== accountIdentityRevision || busy || realtimeActive || !cloudReady || accountSigningOut) return;
     let changed = false;
     for (const next of remote) {
       if (!next.id.startsWith('win-')) continue;
@@ -363,9 +420,5 @@ async function refreshDesktopChats() {
     desktopSnapshot = firstPage.snapshot;
     if (changed) render();
   } catch { /* The next visible refresh retries a temporary disconnect. */ }
-  finally { readingDesktopChats = false; }
 }
-if (typeof window !== 'undefined' && typeof window.setInterval === 'function') {
-  window.setInterval(refreshDesktopChats, 5000);
-  window.addEventListener('focus',refreshDesktopChats);
-}
+window.addEventListener('focus',()=>{if(Date.now()>=nextDesktopRefresh)refreshDesktopChats();});

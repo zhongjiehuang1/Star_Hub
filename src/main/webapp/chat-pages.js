@@ -16,7 +16,7 @@
     ids.add(item.id);chats.push(item);
    }
    if(chats.length>total)throw Error('Conversation catalog count is inconsistent.');
-   if(result.nextOffset===null){if(chats.length!==total)throw Error('Conversation catalog ended early.');return {chats,confirmedDurability:durability};}
+   if(result.nextOffset===null){if(chats.length!==total)throw Error('Conversation catalog ended early.');return {chats,snapshot,confirmedDurability:durability};}
    if(!Number.isSafeInteger(result.nextOffset)||result.nextOffset!==offset+result.chats.length||result.nextOffset<=offset||result.nextOffset>=total)throw Error('Conversation page did not advance safely.');
    offset=result.nextOffset;
   }

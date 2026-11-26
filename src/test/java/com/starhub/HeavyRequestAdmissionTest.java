@@ -7,6 +7,9 @@ import java.net.SocketTimeoutException;
 import java.nio.charset.StandardCharsets;
 import java.util.*;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
 import org.junit.jupiter.api.Test;
 import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.Mockito.*;
@@ -19,6 +22,51 @@ class HeavyRequestAdmissionTest {
     private HttpServletRequest request(String path,String body)throws Exception{return request(path,new ByteArrayInputStream(body.getBytes(StandardCharsets.UTF_8)));}
     private void free(){var lease=ProviderAdmission.tryEnter();assertNotNull(lease);lease.close();}
     private String login(String id){return ModelGateway.JSON.createObjectNode().put("action","login").put("email","unknown@example.test").put("password","synthetic-test-only-password").put("operationId",id).toString();}
+    @Test void signedInStandardChatPageWaitsForTheSameHeavyPermit() throws Exception {
+        String path="/api/workspace",email="user@example.test";
+        String page=ModelGateway.JSON.createObjectNode().put("action","listChats").put("expectedEmail",email)
+            .put("paginationProtocol",1).put("offset",0).toString();
+        var request=request(path,page);
+        var session=mock(HttpSession.class);
+        when(session.getAttribute("starhub.account.id")).thenReturn(1L);
+        when(session.getAttribute("starhub.account.email")).thenReturn(email);
+        var worker=Executors.newSingleThreadExecutor();
+        try(var busy=ProviderAdmission.tryEnter()){
+            assertNotNull(busy);
+            var stranger=request(path,page.replace(email,"other@example.test"));
+            when(stranger.getSession(false)).thenReturn(session);
+            assertEquals("MEMORY_BUSY",assertThrows(StorageFailure.class,()->HeavyRequestBody.read(stranger,16384,path)).code);
+            var readStarted=new CountDownLatch(1);
+            when(request.getSession(false)).thenAnswer(i->{readStarted.countDown();return session;});
+            var result=worker.submit(()->HeavyRequestBody.read(request,16384,path));
+            assertTrue(readStarted.await(2,TimeUnit.SECONDS));
+            assertFalse(result.isDone());
+            busy.close();
+            try(var body=result.get(2,TimeUnit.SECONDS)){
+                assertArrayEquals(page.getBytes(StandardCharsets.UTF_8),body.bytes);
+                assertNull(ProviderAdmission.tryEnter());
+            }
+        }finally{worker.shutdownNow();}
+        free();
+    }
+    @Test void guestCommitCanFinishOnItsFirstRequestWhenAChatPageOwnsThePermit() throws Exception {
+        String path="/api/guest-session",commit="{\"action\":\"commit\"}";
+        var guest=request(path,commit);
+        var worker=Executors.newSingleThreadExecutor();
+        var started=new CountDownLatch(1);
+        try(var page=ProviderAdmission.enterChatRead()){
+            assertNotNull(page);
+            var stage=worker.submit(()->{started.countDown();return HeavyRequestBody.read(guest,16384,path);});
+            assertTrue(started.await(2,TimeUnit.SECONDS));
+            assertThrows(java.util.concurrent.TimeoutException.class,()->stage.get(100,TimeUnit.MILLISECONDS));
+            page.close();
+            try(var body=stage.get(2,TimeUnit.SECONDS)){
+                assertArrayEquals(commit.getBytes(StandardCharsets.UTF_8),body.bytes);
+                assertNull(ProviderAdmission.tryEnter());
+            }
+        }finally{worker.shutdownNow();}
+        free();
+    }
     @Test void logoutCanProceedWhileTheHeavySlotIsHeld() throws Exception {
         String path = "/api/account";
         var body = ModelGateway.JSON.createObjectNode().put("action","logout").put("expectedEmail","user@example.test");

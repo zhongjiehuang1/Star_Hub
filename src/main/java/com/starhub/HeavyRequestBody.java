@@ -2,6 +2,7 @@ package com.starhub;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import jakarta.servlet.http.HttpServletRequest;
+import jakarta.servlet.http.HttpSession;
 import java.io.*;
 import java.util.Set;
 import java.util.concurrent.Semaphore;
@@ -22,11 +23,15 @@ final class HeavyRequestBody implements AutoCloseable {
         InputStream stream=request.getInputStream();byte[] first=stream.readNBytes(Math.min(limit,SMALL_LIMIT)+1);
         if(first.length>limit)throw tooLarge();
         boolean light=false,login=false;
+        JsonNode chatPage=null;
         if(first.length<=SMALL_LIMIT){
             try(var parser=ModelGateway.JSON.getFactory().createParser(first)){
                 parser.enable(com.fasterxml.jackson.core.JsonParser.Feature.STRICT_DUPLICATE_DETECTION);
                 JsonNode parsed=ModelGateway.JSON.readTree(parser);
-                if(parser.nextToken()==null){light=smallRequest(endpoint,parsed);login=boundedLogin(endpoint,parsed);}
+                if(parser.nextToken()==null){
+                    light=smallRequest(endpoint,parsed);login=boundedLogin(endpoint,parsed);
+                    if("/api/workspace".equals(endpoint) && isChatPage(parsed)) chatPage=parsed;
+                }
             }catch(com.fasterxml.jackson.core.JsonProcessingException malformed){/* Normal parser reports invalid JSON. */}
         }
         Runnable release=null;
@@ -34,7 +39,12 @@ final class HeavyRequestBody implements AutoCloseable {
             if(!LOGIN_SLOT.tryAcquire())throw new StorageFailure(429,"ACCOUNT_BUSY","服务器正在处理登录请求，请保留原操作编号后查询或重试。");
             release=LOGIN_SLOT::release;
         }else if(!light){
-            ProviderAdmission.Lease lease=ProviderAdmission.tryEnter();
+            ProviderAdmission.Lease lease;
+            if(chatPage!=null && ownsSession(request,chatPage.path("expectedEmail").textValue()))
+                lease=ProviderAdmission.enterChatRead();
+            else if("/api/guest-session".equals(endpoint))
+                lease=ProviderAdmission.enterGuest();
+            else lease=ProviderAdmission.tryEnter();
             if(lease==null)throw new StorageFailure(429,"MEMORY_BUSY","服务器正在处理大型请求，请保留原操作编号后查询或重试。");
             release=lease::close;
         }
@@ -45,6 +55,26 @@ final class HeavyRequestBody implements AutoCloseable {
             byte[] body=new byte[first.length+rest.length];System.arraycopy(first,0,body,0,first.length);System.arraycopy(rest,0,body,first.length,rest.length);
             return new HeavyRequestBody(body,release);
         }catch(Throwable failure){if(release!=null)release.run();throw failure;}
+    }
+    // A legacy or large-page read still holds the sole heavy permit while loading
+    // data. A small, authenticated page request can wait briefly for it.
+    private static boolean isChatPage(JsonNode data) {
+        if (data==null || !data.isObject() || !"listChats".equals(data.path("action").textValue())
+                || !data.path("paginationProtocol").isInt() || data.path("paginationProtocol").intValue()!=1) return false;
+        JsonNode owner=data.path("expectedEmail"),offset=data.path("offset"),snapshot=data.path("snapshot");
+        if (!owner.isTextual() || owner.textValue().isBlank() || owner.textValue().length()>254) return false;
+        if (!offset.isMissingNode() && (!offset.isInt() || offset.intValue()<0 || offset.intValue()>ConversationPages.MAX_CHATS)) return false;
+        if (snapshot.isMissingNode() ? offset.asInt()>0 : !snapshot.isTextual() || !snapshot.textValue().matches("[0-9a-f]{64}")) return false;
+        return data.size()==3+(offset.isMissingNode()?0:1)+(snapshot.isMissingNode()?0:1);
+    }
+    private static boolean ownsSession(HttpServletRequest request,String email) {
+        HttpSession session=request.getSession(false);
+        try {
+            return session!=null && session.getAttribute("starhub.account.id") instanceof Long
+                && email.equals(session.getAttribute("starhub.account.email"));
+        } catch (IllegalStateException ended) {
+            return false;
+        }
     }
     private static boolean boundedLogin(String endpoint,JsonNode value){
         if(!"/api/account".equals(endpoint)||value==null||!value.isObject()||value.size()!=4)return false;
