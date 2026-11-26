@@ -63,7 +63,7 @@ const StarSessionIdle=(()=>{
   if(typeof document==='undefined')return {create};
   let noticeTimer=null;
   function notice(message){const element=document.getElementById('sessionNotice');if(!element)return;clearTimeout(noticeTimer);element.textContent=t(message);element.hidden=false;noticeTimer=setTimeout(()=>{element.hidden=true;},5000);}
-  async function activityRequest(email,age){const response=await fetch('api/account',{method:'POST',credentials:'same-origin',headers:{'Content-Type':'application/json','X-Starhub-Client':'web'},body:JSON.stringify({action:'userActivity',expectedEmail:email,activityAgeMs:age})});if(!response.ok){const error=Error('Session activity failed');error.status=response.status;throw error;}return response.json();}
+  async function activityRequest(email,age){const response=await sendAccountPost('api/account',{method:'POST',credentials:'same-origin',headers:{'Content-Type':'application/json','X-Starhub-Client':'web'},body:JSON.stringify({action:'userActivity',expectedEmail:email,activityAgeMs:age})});if(!response.ok){const error=Error('Session activity failed');error.status=response.status;throw error;}return response.json();}
   async function statusRequest(){const response=await fetch('api/account?sessionStatus=1',{cache:'no-store',credentials:'same-origin'});if(response.status===404)return {disabled:true};if(!response.ok)throw Error('Session status unavailable');return response.json();}
   let countdown=null;
   function displayCountdown(value){

@@ -54,7 +54,7 @@
     const email = accountEmail;
     const identity = accountIdentityRevision;
     const epoch = accountEpoch;
-    const response = await fetch('api/intelligence', {
+    const response = await sendAccountPost('api/intelligence', {
       method: 'POST', cache: 'no-store', headers: {'Content-Type': 'application/json', 'X-Starhub-Client': 'web'},
       body: JSON.stringify({action, expectedEmail: email, ...data})
     });

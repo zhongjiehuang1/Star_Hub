@@ -2,8 +2,20 @@
 let accountEmail='',accountDisplayName='',accountKeyRing=[],reauthEmail='',accountIdentityRevision=0,lastDisplayedAccount='';
 function notifyAccountContext(){document.dispatchEvent(new CustomEvent('starhub:account-changed'));}
 const pendingAccountOperations=new Map();
+// These small POSTs share the entry's account-request slot. Preserve their
+// order and discard queued requests if the signed-in identity has changed.
+let accountPostTail=Promise.resolve();
+function sendAccountPost(url,options){
+ const owner=accountEmail, revision=accountIdentityRevision;
+ const pending=accountPostTail.then(()=>{
+  if(owner!==accountEmail || revision!==accountIdentityRevision)throw Error(t('账户已更改，请刷新后重试。'));
+  return fetch(url,options);
+ });
+ accountPostTail=pending.then(()=>{},()=>{});
+ return pending;
+}
 async function accountRequest(body,resolveKnown=true){
- if(!window.StarHubDesktopConnection?.pending&&['login','logout','changePassword'].includes(body.action)){accountWorkspaceBootstrap=null;accountIdentityRevision++;notifyAccountContext();if(typeof clearGeneratedPreviews==='function')clearGeneratedPreviews();}
+ if(!window.StarHubDesktopConnection?.pending&&['login','logout','changePassword'].includes(body.action)){accountWorkspaceBootstrap=null;accountIdentityRevision++;if(body.action!=='logout')notifyAccountContext();if(typeof clearGeneratedPreviews==='function')clearGeneratedPreviews();}
  const mutation=['login','changePassword','addKey','selectKey','deleteKey'].includes(body.action);let pendingKey;
  function retire(){if(pendingKey){pendingAccountOperations.delete(pendingKey);try{sessionStorage.removeItem(pendingKey);}catch{}}}
  const mode=value=>['dual','single'].includes(value);
@@ -18,7 +30,7 @@ async function accountRequest(body,resolveKnown=true){
  }
  async function queryKnown(){
   if(body.action==='login'){
-   const response=await fetch('api/account',{method:'POST',headers:{'Content-Type':'application/json','X-Starhub-Client':'web'},body:JSON.stringify({action:'loginStatus',email:body.email,operationId:body.operationId})}),known=await response.json();
+   const response=await sendAccountPost('api/account',{method:'POST',headers:{'Content-Type':'application/json','X-Starhub-Client':'web'},body:JSON.stringify({action:'loginStatus',email:body.email,operationId:body.operationId})}),known=await response.json();
    if(response.ok&&known.operationId===body.operationId&&known.state==='COMMITTED'&&[200,401,429].includes(known.status)&&mode(response.headers?.get('X-Four-Project-Durability')))return known;
   }else if(typeof workspaceRequest==='function'){
    const known=await workspaceRequest({action:'requestStatus',operationId:body.operationId});
@@ -29,7 +41,7 @@ async function accountRequest(body,resolveKnown=true){
  try{
   const owner=accountEmail, epoch=accountIdentityRevision;
   const options={method:'POST',headers:{'Content-Type':'application/json','X-Starhub-Client':'web'},body:JSON.stringify(body.action==='login'?body:{...body,expectedEmail:owner})};
-  let r=await fetch('api/account',options);
+  let r=await sendAccountPost('api/account',options);
   if(body.action==='logout'){
    for(let attempt=0;r.status===429 && attempt<3;attempt++){
     const info=await r.clone().json().catch(()=>null);
@@ -37,7 +49,7 @@ async function accountRequest(body,resolveKnown=true){
     const retry=Number(r.headers.get('Retry-After'));
     await new Promise(resolve=>setTimeout(resolve,1000*(retry>0 && retry<=10?retry:attempt+1)));
     if(accountEmail!==owner || accountIdentityRevision!==epoch)throw Error(t('账户已更改，请刷新后重试。'));
-    r=await fetch('api/account',options);
+    r=await sendAccountPost('api/account',options);
    }
   }
   const d=await r.json();

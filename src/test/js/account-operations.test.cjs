@@ -74,3 +74,23 @@ test('a change of account cancels a pending sign-out retry',async()=>{
  await assert.rejects(f.run("accountRequest({action:'logout'})"));
  assert.equal(f.requests.length,1);
 });
+
+test('logout waits for the in-flight account check without querying availability again',async()=>{
+ let finishCheck, started;
+ const checking=new Promise(resolve=>{started=resolve;});
+ const f=fixture(body=>{
+  if(body.action==='available'){
+   started();
+   return new Promise(resolve=>{finishCheck=()=>resolve(ok(body));});
+  }
+  return ok(body);
+ });
+ f.run("document.dispatchEvent=()=>{throw Error('Premature account-change event')}");
+ const background=f.run("sendAccountPost('api/intelligence',{method:'POST',body:JSON.stringify({action:'available'})})");
+ await checking;
+ const signOut=f.run("accountRequest({action:'logout'})");
+ assert.deepEqual(f.requests.map(r=>r.action),['available']);
+ finishCheck();
+ await Promise.all([background,signOut]);
+ assert.deepEqual(f.requests.map(r=>r.action),['available','logout']);
+});
