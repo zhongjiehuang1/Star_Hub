@@ -54,7 +54,7 @@ const StarSessionIdle=(()=>{
       }catch{if(current(id))check();}
       finally{if(inflight===flight)inflight=null;if(current(id)&&serial!==activitySerial)queue();}
     }
-    function queue(){if((!visible()&&!lastInputSpeech)||!owner()||expired)return;if(trailing!==null)cancel(trailing);const delay=Math.max(0,throttleMs-(now()-lastSent));trailing=schedule(()=>{trailing=null;send();},delay);}
+    function queue(){if((!visible()&&!lastInputSpeech)||!owner()||expired)return;if(trailing!==null)cancel(trailing);const delay=Math.max(0,throttleMs-(now()-lastSent));const id=identity();trailing=schedule(()=>{trailing=null;if(current(id))send();},delay);}
     function activity(trusted,speech=false){if(available!==true||!trusted||(!visible()&&!speech)||!owner()||expired)return;lastInput=now();lastInputSpeech=speech;activitySerial++;queue();}
     function sync(){token++;expired=false;deadline=null;clearTimers();renderCountdown();lastSent=-Infinity;inflight=null;if(owner())check();}
     function onVisibility(){if(visible()&&owner()){renderCountdown();check();}else if(!lastInputSpeech&&trailing!==null){cancel(trailing);trailing=null;}}
@@ -83,7 +83,13 @@ const StarSessionIdle=(()=>{
     if(reauthEmail!==email||!await restoreAccount()||accountEmail!==email)return false;
     cloudFailed=false;await saveCloudChats();reauthEmail='';if($('accountDialog').open)$('accountDialog').close();showError('');notice('登录成功');return true;
   }});
-  for(const name of ['pointerdown','keydown','wheel','touchstart'])document.addEventListener(name,event=>manager.activity(event.isTrusted),{capture:true,passive:true});
+  for(const name of ['pointerdown','keydown','wheel','touchstart']){
+    document.addEventListener(name,event=>{
+      // An explicit sign-out ends the session; it should never renew it.
+      if(event.target?.closest?.('#accountLogout'))return;
+      manager.activity(event.isTrusted);
+    },{capture:true,passive:true});
+  }
   document.addEventListener('visibilitychange',manager.onVisibility);
   document.addEventListener('DOMContentLoaded',()=>manager.sync(),{once:true});
   let channel=null;try{if(typeof BroadcastChannel!=='undefined'){channel=new BroadcastChannel('starhub.account-session');channel.onmessage=event=>{if(event.data?.type==='changed')manager.check();};}}catch{}

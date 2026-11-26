@@ -8,7 +8,7 @@ import java.util.concurrent.Semaphore;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 /** One shared JVM slot covers body expansion, SQL result loading and response
- * serialization. Small status and sign-out requests bypass it; a bounded login instead
+ * serialization. Small status and session-control requests bypass it; a bounded login instead
  * requires its own one-request slot, never unbounded parallel password hashing.
  * The first 16 KiB are bounded even when a client lies about Content-Length. */
 final class HeavyRequestBody implements AutoCloseable {
@@ -58,9 +58,16 @@ final class HeavyRequestBody implements AutoCloseable {
         if(value==null||!value.isObject())return false;
         // Existing result queries, readFile, listChats, guest get/status and
         // provider-operation can all load large payloads: they never bypass.
-        if ("/api/account".equals(endpoint) && "logout".equals(value.path("action").asText())) {
-            JsonNode email = value.path("expectedEmail");
-            return value.size() == 2 && email.isTextual() && email.textValue().length() <= 254;
+        if ("/api/account".equals(endpoint)) {
+            String action = value.path("action").asText();
+            if ("logout".equals(action) || "userActivity".equals(action)) {
+                JsonNode email = value.path("expectedEmail");
+                if (!email.isTextual() || email.textValue().length() > 254) return false;
+                if ("logout".equals(action)) return value.size() == 2;
+                JsonNode age = value.path("activityAgeMs");
+                return value.size() == 3 && age.isIntegralNumber() && age.canConvertToInt()
+                    && age.intValue() >= 0 && age.intValue() <= AccountIdleSessions.MAX_ACTIVITY_AGE_MILLIS;
+            }
         }
         Set<String> allowed;
         if("/api/workspace".equals(endpoint)&&"operationSummary".equals(value.path("action").asText()))allowed=Set.of("action","operationId","expectedEmail");

@@ -15,6 +15,11 @@ test('only genuine input sends activity and server status checks do not extend i
  const h=harness();h.manager.sync();await Promise.resolve();h.manager.activity(false);await h.advance(10);assert.equal(h.calls.length,0);
  h.manager.activity(true);await h.advance(10);assert.equal(h.calls.length,1);assert.equal(h.calls[0].email,'owner@example.test');assert.ok(h.calls[0].age<=10);
 });
+test('a scheduled activity report is discarded when its account revision changes',async()=>{
+ const h=harness();h.manager.sync();await Promise.resolve();
+ h.manager.activity(true);h.revision=2;await h.advance(1);
+ assert.equal(h.calls.length,0);
+});
 test('disabled idle support is probed once and never sends activity or repeated checks',async()=>{
  const h=harness();h.status={disabled:true};h.manager.sync();h.manager.activity(true);await Promise.resolve();await h.advance(600000);h.manager.activity(true);h.manager.onVisibility();await h.advance(600000);
  assert.equal(h.statusCalls,1);assert.equal(h.calls.length,0);

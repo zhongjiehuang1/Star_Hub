@@ -36,6 +36,28 @@ class HeavyRequestAdmissionTest {
             assertNull(ProviderAdmission.tryEnter());
         }
     }
+    @Test void boundedSessionActivityDoesNotCompeteWithLargeBodies() throws Exception {
+        String path = "/api/account";
+        var activity = ModelGateway.JSON.createObjectNode().put("action","userActivity")
+            .put("expectedEmail","user@example.test").put("activityAgeMs",0);
+        try (var heavy = ProviderAdmission.tryEnter()) {
+            assertNotNull(heavy);
+            for (int age : List.of(0, AccountIdleSessions.MAX_ACTIVITY_AGE_MILLIS)) {
+                String json = activity.put("activityAgeMs",age).toString();
+                try (var report = HeavyRequestBody.read(request(path,json),16384,path)) {
+                    assertArrayEquals(json.getBytes(StandardCharsets.UTF_8),report.bytes);
+                }
+            }
+            for (var invalid : List.of(activity.deepCopy().put("extra",true),
+                    activity.deepCopy().put("expectedEmail","x".repeat(255)),
+                    activity.deepCopy().put("activityAgeMs",-1), activity.deepCopy().put("activityAgeMs",5001),
+                    activity.deepCopy().put("activityAgeMs",4294967296L), activity.deepCopy().put("activityAgeMs","1"))) {
+                assertEquals("MEMORY_BUSY",assertThrows(StorageFailure.class,
+                    () -> HeavyRequestBody.read(request(path,invalid.toString()),16384,path)).code);
+            }
+            assertNull(ProviderAdmission.tryEnter());
+        }
+    }
     @Test void boundedLoginUsesItsOwnSingleSlotWhileHeavyWorkRemainsExclusive()throws Exception {
         var heavy=ProviderAdmission.tryEnter();assertNotNull(heavy);
         try{
