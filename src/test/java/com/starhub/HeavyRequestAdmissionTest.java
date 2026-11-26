@@ -19,6 +19,23 @@ class HeavyRequestAdmissionTest {
     private HttpServletRequest request(String path,String body)throws Exception{return request(path,new ByteArrayInputStream(body.getBytes(StandardCharsets.UTF_8)));}
     private void free(){var lease=ProviderAdmission.tryEnter();assertNotNull(lease);lease.close();}
     private String login(String id){return ModelGateway.JSON.createObjectNode().put("action","login").put("email","unknown@example.test").put("password","synthetic-test-only-password").put("operationId",id).toString();}
+    @Test void logoutCanProceedWhileTheHeavySlotIsHeld() throws Exception {
+        String path = "/api/account";
+        var body = ModelGateway.JSON.createObjectNode().put("action","logout").put("expectedEmail","user@example.test");
+        try (var heavy = ProviderAdmission.tryEnter()) {
+            assertNotNull(heavy);
+            try (var logout = HeavyRequestBody.read(request(path,body.toString()),16384,path)) {
+                assertArrayEquals(body.toString().getBytes(StandardCharsets.UTF_8),logout.bytes);
+            }
+            for (String invalid : List.of(body.deepCopy().put("extra","x").toString(),
+                    body.deepCopy().put("expectedEmail","x".repeat(255)).toString(),
+                    body.deepCopy().put("expectedEmail",123).toString())) {
+                assertEquals("MEMORY_BUSY",assertThrows(StorageFailure.class,
+                    () -> HeavyRequestBody.read(request(path,invalid),16384,path)).code);
+            }
+            assertNull(ProviderAdmission.tryEnter());
+        }
+    }
     @Test void boundedLoginUsesItsOwnSingleSlotWhileHeavyWorkRemainsExclusive()throws Exception {
         var heavy=ProviderAdmission.tryEnter();assertNotNull(heavy);
         try{

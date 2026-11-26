@@ -27,7 +27,20 @@ async function accountRequest(body,resolveKnown=true){
   return null;
  }
  try{
-  const r=await fetch('api/account',{method:'POST',headers:{'Content-Type':'application/json','X-Starhub-Client':'web'},body:JSON.stringify(body.action==='login'?body:{...body,expectedEmail:accountEmail})}),d=await r.json();
+  const owner=accountEmail, epoch=accountIdentityRevision;
+  const options={method:'POST',headers:{'Content-Type':'application/json','X-Starhub-Client':'web'},body:JSON.stringify(body.action==='login'?body:{...body,expectedEmail:owner})};
+  let r=await fetch('api/account',options);
+  if(body.action==='logout'){
+   for(let attempt=0;r.status===429 && attempt<3;attempt++){
+    const info=await r.clone().json().catch(()=>null);
+    if(info && !['SERVER_BUSY','MEMORY_BUSY','ATOMIC_WRITER_BUSY'].includes(info.code))break;
+    const retry=Number(r.headers.get('Retry-After'));
+    await new Promise(resolve=>setTimeout(resolve,1000*(retry>0 && retry<=10?retry:attempt+1)));
+    if(accountEmail!==owner || accountIdentityRevision!==epoch)throw Error(t('账户已更改，请刷新后重试。'));
+    r=await fetch('api/account',options);
+   }
+  }
+  const d=await r.json();
   const confirmed=mutation&&d.operationId===body.operationId&&d.operationState==='COMMITTED'&&mode(r.headers?.get('X-Four-Project-Durability'));
   if(!r.ok){
    if(confirmed)retire();

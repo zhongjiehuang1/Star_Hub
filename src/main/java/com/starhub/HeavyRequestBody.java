@@ -8,7 +8,7 @@ import java.util.concurrent.Semaphore;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 /** One shared JVM slot covers body expansion, SQL result loading and response
- * serialization. Small status protocols bypass it; a bounded login instead
+ * serialization. Small status and sign-out requests bypass it; a bounded login instead
  * requires its own one-request slot, never unbounded parallel password hashing.
  * The first 16 KiB are bounded even when a client lies about Content-Length. */
 final class HeavyRequestBody implements AutoCloseable {
@@ -26,7 +26,7 @@ final class HeavyRequestBody implements AutoCloseable {
             try(var parser=ModelGateway.JSON.getFactory().createParser(first)){
                 parser.enable(com.fasterxml.jackson.core.JsonParser.Feature.STRICT_DUPLICATE_DETECTION);
                 JsonNode parsed=ModelGateway.JSON.readTree(parser);
-                if(parser.nextToken()==null){light=smallStatus(endpoint,parsed);login=boundedLogin(endpoint,parsed);}
+                if(parser.nextToken()==null){light=smallRequest(endpoint,parsed);login=boundedLogin(endpoint,parsed);}
             }catch(com.fasterxml.jackson.core.JsonProcessingException malformed){/* Normal parser reports invalid JSON. */}
         }
         Runnable release=null;
@@ -54,10 +54,14 @@ final class HeavyRequestBody implements AutoCloseable {
         String operation=value.path("operationId").asText();
         try{return java.util.UUID.fromString(operation).toString().equals(operation);}catch(IllegalArgumentException invalid){return false;}
     }
-    private static boolean smallStatus(String endpoint,JsonNode value){
+    private static boolean smallRequest(String endpoint,JsonNode value){
         if(value==null||!value.isObject())return false;
         // Existing result queries, readFile, listChats, guest get/status and
         // provider-operation can all load large payloads: they never bypass.
+        if ("/api/account".equals(endpoint) && "logout".equals(value.path("action").asText())) {
+            JsonNode email = value.path("expectedEmail");
+            return value.size() == 2 && email.isTextual() && email.textValue().length() <= 254;
+        }
         Set<String> allowed;
         if("/api/workspace".equals(endpoint)&&"operationSummary".equals(value.path("action").asText()))allowed=Set.of("action","operationId","expectedEmail");
         else if("/api/account".equals(endpoint)&&"loginStatus".equals(value.path("action").asText()))allowed=Set.of("action","operationId","email");

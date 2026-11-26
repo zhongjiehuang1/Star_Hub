@@ -2,7 +2,7 @@ const test=require('node:test'),assert=require('node:assert/strict'),fs=require(
 function fixture(handler){
  const stored=new Map(),requests=[],elements=new Map(),element=id=>{if(!elements.has(id))elements.set(id,{});return elements.get(id);};
  const context=vm.createContext({window:{},crypto:require('node:crypto').webcrypto,sessionStorage:{getItem:k=>stored.get(k)||null,setItem:(k,v)=>stored.set(k,v),removeItem:k=>stored.delete(k)},
-  $:element,CustomEvent:class{constructor(type){this.type=type;}},document:{addEventListener(){},dispatchEvent(){}},t:k=>k,encodeURIComponent,
+  $:element,setTimeout:queueMicrotask,CustomEvent:class{constructor(type){this.type=type;}},document:{addEventListener(){},dispatchEvent(){}},t:k=>k,encodeURIComponent,
   fetch:async(url,options)=>{const body=JSON.parse(options.body);requests.push(body);return handler(body,requests.length);}});
  vm.runInContext(fs.readFileSync(path.join(__dirname,'../../main/webapp/account.js'),'utf8'),context);vm.runInContext("accountEmail='owner@example.test'",context);
  return {stored,requests,run:code=>vm.runInContext(code,context)};
@@ -61,4 +61,16 @@ test('an unconfirmed original password query cannot authorize a fresh operation'
 });
 test('unavailable identity storage rejects before sending any account mutation',async()=>{
  const f=fixture(body=>ok(body));f.run("sessionStorage.setItem=()=>{throw Error('test-only blocked storage');}");await assert.rejects(f.run("accountRequest({action:'login',email:'test@example.test',password:'test-only-secret'})"),/blocked storage/);assert.equal(f.requests.length,0);
+});
+
+test('a temporary edge refusal retries the same sign-out without a second click',async()=>{
+ const f=fixture((body,n)=>n===1?new Response('Busy',{status:429}):ok(body));
+ await f.run("accountRequest({action:'logout'})");
+ assert.deepEqual(f.requests,[{action:'logout',expectedEmail:'owner@example.test'},{action:'logout',expectedEmail:'owner@example.test'}]);
+});
+
+test('a change of account cancels a pending sign-out retry',async()=>{
+ const f=fixture(()=>{f.run("accountEmail='other@example.test'");return new Response('Busy',{status:429});});
+ await assert.rejects(f.run("accountRequest({action:'logout'})"));
+ assert.equal(f.requests.length,1);
 });
