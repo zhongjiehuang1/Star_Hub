@@ -43,10 +43,15 @@ final class DesktopConnection {
 
     static String issue(Properties config, long user, String generation, byte[] passwordHash, String idleSession,
                         String challenge, String model, Instant now) throws Exception {
+        return issue(config,user,generation,passwordHash,idleSession,challenge,model,now,false);
+    }
+
+    static String issue(Properties config, long user, String generation, byte[] passwordHash, String idleSession,
+                        String challenge, String model, Instant now, boolean chats) throws Exception {
         if (!token(challenge)) throw new IllegalArgumentException("Invalid desktop challenge.");
         ObjectNode grant = ModelGateway.JSON.createObjectNode().put("user", user).put("generation", generation)
             .put("password", digest(passwordHash)).put("idle", idleSession).put("challenge", challenge)
-            .put("model", chatModel(model)).put("expires", now.getEpochSecond() + LIFETIME_SECONDS);
+            .put("chats", chats).put("model", chatModel(model)).put("expires", now.getEpochSecond() + LIFETIME_SECONDS);
         byte[] nonce = new byte[12];
         RANDOM.nextBytes(nonce);
         byte[] encrypted = AccountServlet.crypt(true, ModelGateway.JSON.writeValueAsBytes(grant), vault(config), nonce, PURPOSE);
@@ -85,6 +90,7 @@ final class DesktopConnection {
             return null;
         ObjectNode profile = ModelGateway.JSON.createObjectNode().put("email", email).put("model", chatModel(grant.path("model").asText()));
         profile.put("memoryOwner", generation).put("memoryToken", DesktopMemory.issue(config, user, generation, grant.path("password").asText(), Instant.now()));
+        if (grant.path("chats").asBoolean(false)) profile.put("chatToken", DesktopScope.issue(config,user,generation,grant.path("password").asText(),Instant.now(),DesktopChats.PURPOSE,DesktopChats.LIFETIME));
         if (displayName != null && !displayName.isBlank()) profile.put("displayName", displayName.strip());
         if (DesktopDiagnosticsServlet.enabled(config, email))
             profile.put("diagnosticsToken", DesktopDiagnosticsServlet.issue(config, user, generation,

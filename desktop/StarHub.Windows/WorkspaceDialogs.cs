@@ -160,7 +160,7 @@ public sealed partial class MainWindow
         try
         {
             await new AccountMemorySync(store).SyncAsync(profile, windowLifetime.Token, enabled);
-            if (ReferenceEquals(profile, accountProfile)) SetMemoryReconnect(false);
+            if (ReferenceEquals(profile, accountProfile)) SetMemoryReconnect(profile.ChatToken is null);
             return WorkText("账号记忆已同步。","Account memory is up to date.");
         }
         catch (HttpRequestException e) when (e.StatusCode == System.Net.HttpStatusCode.Unauthorized)
@@ -182,7 +182,7 @@ public sealed partial class MainWindow
         var body = new StackPanel { Spacing = 8 };
         body.Children.Add(Label(profile is null ? T("Star Hub recalls related notes and saves notes you explicitly ask it to remember.")
             : profile.MemoryToken is null ? L("点侧栏的“连接账号记忆”，在官网确认一次即可。","Choose Connect account memory in the sidebar and confirm once on the website.")
-            : L("与此账号的网页版共享记忆。对话、文件和设备读数保存在本机。","Memory is shared with this account on the web. Chats, files and device readings stay on this PC.")));
+            : L("与网页版共享账号记忆。连接账号同步后，新对话也会出现在官网。文件和设备读数保存在本机。","Account memory is shared with the website. Connect account sync to see new chats there too. Files and device readings stay on this PC.")));
         var toggle = new Button();
         if (profile?.MemoryToken is not null) body.Children.Add(toggle);
         var search = Field(T("Find a memory"), "", 240);

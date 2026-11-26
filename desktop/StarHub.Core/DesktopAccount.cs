@@ -18,6 +18,7 @@ public sealed class DesktopAccountProfile
     public string? MemoryToken { get; init; }
     [System.Text.Json.Serialization.JsonIgnore]
     public string CacheOwner => MemoryOwner ?? "unlinked/" + Email.ToLowerInvariant();
+    public string? ChatToken { get; init; }
     public string? DiagnosticsToken { get; init; }
 
     [System.Text.Json.Serialization.JsonIgnore]
@@ -29,7 +30,7 @@ public sealed class DesktopAccountProfile
     public DesktopAccountProfile WithDesktopName(string? name) => new()
     {
         Email = Email, Model = Model, ApiKey = ApiKey, DisplayName = DisplayName, DesktopDisplayName = ValidName(name),
-        DiagnosticsToken = DiagnosticsToken, MemoryOwner = MemoryOwner, MemoryToken = MemoryToken
+        ChatToken = ChatToken, DiagnosticsToken = DiagnosticsToken, MemoryOwner = MemoryOwner, MemoryToken = MemoryToken
     };
 
     [System.Text.Json.Serialization.JsonIgnore]
@@ -61,7 +62,7 @@ public sealed class DesktopAccountClient
         string challenge = Base64Url(SHA256.HashData(Encoding.ASCII.GetBytes(verifier)));
         try
         {
-            openBrowser(new Uri(Website, $"?desktopPort={port}&desktopState={state}&desktopChallenge={challenge}"));
+            openBrowser(new Uri(Website, $"?desktopPort={port}&desktopState={state}&desktopChallenge={challenge}&desktopChats=1"));
             string code = await ReceiveCodeAsync(listener, port, state, deadline.Token).ConfigureAwait(false);
             if (code.Length == 0) throw new StarHubException("The browser connection was cancelled.");
             using var client = new HttpClient(new HttpClientHandler { AllowAutoRedirect = false, UseCookies = false })

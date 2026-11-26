@@ -178,7 +178,7 @@ public final class AccountServlet extends HttpServlet {
                 if(!DesktopConnection.token(challenge)){fail(res,400,"桌面连接请求无效。");return;}
                 String code=DesktopConnection.issue(p,(Long)session.getAttribute(USER),(String)session.getAttribute("starhub.account.generation"),
                     (byte[])session.getAttribute("starhub.account.hash"),(String)session.getAttribute(AccountIdleSessions.ATTRIBUTE),
-                    challenge,body.path("model").asText(),java.time.Instant.now());
+                    challenge,body.path("model").asText(),java.time.Instant.now(),body.path("syncChats").asBoolean(false));
                 respond(res,200,ModelGateway.JSON.createObjectNode().put("code",code));return;
             }
             if(action.equals("changePassword")){

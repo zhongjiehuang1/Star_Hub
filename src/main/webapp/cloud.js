@@ -43,21 +43,21 @@ function workspaceActivity(message,done=false){
  element.textContent=message||'';element.hidden=!message&&workspaceActivityCount===0;
  element.setAttribute('aria-busy',workspaceActivityCount>0?'true':'false');
 }
-async function sendWorkspaceRequest(data,expectedEmail,epoch=accountIdentityRevision){
+async function sendWorkspaceRequest(data,expectedEmail,epoch=accountIdentityRevision,quiet=false){
  workspaceOwner(expectedEmail,epoch);
  // Freeze the exact body and actor before joining this tab's existing guest
  // queue. Retry only an explicit pre-mutation memory rejection, never unknown
  // outcomes, authentication throttles or provider dispatches.
- const body=JSON.stringify({...data,expectedEmail});let boundedChat=data.action==='listChats',completed=false,activityVisible=data.action!=='saveChat';
+ const body=JSON.stringify({...data,expectedEmail});let boundedChat=data.action==='listChats',completed=false,activityVisible=!quiet&&data.action!=='saveChat';
  if(activityVisible){workspaceActivityCount++;workspaceActivity(t('正在读取或保存，请稍候。当前内容已保留。'));}
  try{for(let attempt=0;;attempt++){
   if(typeof StarStore!=='undefined'){if(['listChats','listFiles','readFile'].includes(data.action)&&StarStore.whenHydrated)await StarStore.whenHydrated();else if(StarStore.whenSettled)await StarStore.whenSettled();}workspaceOwner(expectedEmail,epoch);
   const r=await fetch('api/workspace',{method:'POST',headers:{'Content-Type':'application/json','X-Starhub-Client':'web',...(boundedChat?{'X-Starhub-Bounded-Read':'chat-v1'}:{})},body});
   const d=await r.json();workspaceOwner(expectedEmail,epoch);
   if(!r.ok){
-   if(boundedChat&&r.status===413&&d.code==='BOUNDED_CHAT_FALLBACK'){boundedChat=false;workspaceActivity(t('正在加载较大的聊天页面，请稍候。'));continue;}
+   if(boundedChat&&r.status===413&&d.code==='BOUNDED_CHAT_FALLBACK'){boundedChat=false;if(!quiet)workspaceActivity(t('正在加载较大的聊天页面，请稍候。'));continue;}
    const retryAfter=r.headers?.get('Retry-After'),wait=/^[1-3]$/.test(retryAfter||'')?Number(retryAfter)*1000:0;
-   if(r.status===429&&['MEMORY_BUSY','BOUNDED_READ_BUSY'].includes(d.code)&&attempt<2&&wait){if(!activityVisible){activityVisible=true;workspaceActivityCount++;}workspaceActivity(t('服务器繁忙，正在等待；原请求编号和当前内容已保留。'));await new Promise(resolve=>setTimeout(resolve,wait));workspaceOwner(expectedEmail,epoch);continue;}
+   if(r.status===429&&['MEMORY_BUSY','BOUNDED_READ_BUSY'].includes(d.code)&&attempt<2&&wait){if(!quiet&&!activityVisible){activityVisible=true;workspaceActivityCount++;}workspaceActivity(t('服务器繁忙，正在等待；原请求编号和当前内容已保留。'));await new Promise(resolve=>setTimeout(resolve,wait));workspaceOwner(expectedEmail,epoch);continue;}
    const error=Error(['CLUSTER_UNAVAILABLE','OPERATION_PENDING'].includes(d.code)?t('服务器故障，请等待恢复'):(d.error||d.message||t('账户存储失败')));error.status=r.status;error.code=d.code;
    if(d.code==='CLUSTER_UNAVAILABLE'||d.code==='OPERATION_PENDING')setClusterAvailability(false);throw error;
   }
@@ -66,7 +66,7 @@ async function sendWorkspaceRequest(data,expectedEmail,epoch=accountIdentityRevi
  }}catch(error){
   const unknown=!error.status||error.status>=500;
   if(unknown&&data.operationId){error.operationId=data.operationId;error.code='OPERATION_PENDING';workspaceActivity(t('结果尚未确认，请保留当前页面和原请求编号后查询。'));}
-  else workspaceActivity(error.message||t('读取未完成，当前内容已保留。'));
+  else if(!quiet)workspaceActivity(error.message||t('读取未完成，当前内容已保留。'));
   throw error;
  }finally{if(activityVisible){workspaceActivityCount=Math.max(0,workspaceActivityCount-1);if(completed)workspaceActivity(workspaceActivityCount?t('正在处理其他请求，请稍候。'):'');else{const element=$('workspaceActivity');if(element)element.setAttribute('aria-busy',workspaceActivityCount>0?'true':'false');}}}
 }
@@ -82,7 +82,7 @@ async function cloudUpload(data,name){const comma=data.indexOf(','),mime=data.sl
 async function readCloudFile(id){const f=await workspaceRequest({action:'readFile',id});return {...f,url:`data:${f.mime};base64,${f.data}`};}
 async function uploadSubmittedFiles(data,files,expectedEmail=accountEmail,active=()=>true){const epoch=accountIdentityRevision;function check(){workspaceOwner(expectedEmail,epoch);if(!active())throw Error('The original file conversation changed.');}check();const ids=[];for(let i=0;i<data.length;i++){check();const key=data[i];if(librarySelection.has(key))ids.push(librarySelection.get(key));else{const id=await cloudUpload(key,files[i]?.name||`attachment-${i+1}`);check();ids.push(id);}}check();librarySelection.clear();return ids;}
 async function hydrateChat(c){const email=accountEmail,epoch=accountIdentityRevision;workspaceOwner(email,epoch);for(const m of c.messages){workspaceOwner(email,epoch);if(m.fileIds?.length){let list=[];for(const id of m.fileIds){try{const file=await readCloudFile(id);workspaceOwner(email,epoch);list.push(file.url);}catch(error){workspaceOwner(email,epoch);m.attachmentOmitted=true;}}if(m.imageCount){m.images=list.slice(0,m.imageCount);m.attachments=list.slice(m.imageCount);}else m.attachments=list;}if(m.mediaRefs?.length)m.mediaRefs=StarProviderMedia.references(m.mediaRefs);if(m.imageSaveFailed)m.warning=t('图片已生成，但未能保存到文件库；请在刷新前下载图片。');}workspaceOwner(email,epoch);c.hydrated=true;}
-async function loadCloudChats(){const owner=accountEmail,epoch=accountIdentityRevision;workspaceOwner(owner,epoch);const result=await StarChatPages.collect(workspaceRequest,()=>Boolean(owner)&&accountEmail===owner&&accountIdentityRevision===epoch,typeof consumeWorkspaceBootstrap==='function'?consumeWorkspaceBootstrap():null);workspaceOwner(owner,epoch);const resultChats=[];for(const item of result.chats){if(!item.data||!Array.isArray(item.data.messages))continue;const c={id:item.id,title:item.title,revision:item.revision,draft:item.data.draft||'',messages:item.data.messages};c.savedPayload=JSON.stringify({title:c.title,data:chatData(c)});c.savedDurability=result.confirmedDurability;c.hydrated=false;resultChats.push(c);}return resultChats;}
+async function loadCloudChats(firstPage=null,readPage=workspaceRequest){const owner=accountEmail,epoch=accountIdentityRevision;workspaceOwner(owner,epoch);const result=await StarChatPages.collect(readPage,()=>Boolean(owner)&&accountEmail===owner&&accountIdentityRevision===epoch,firstPage ?? (typeof consumeWorkspaceBootstrap==='function'?consumeWorkspaceBootstrap():null));workspaceOwner(owner,epoch);const resultChats=[];for(const item of result.chats){if(!item.data||!Array.isArray(item.data.messages))continue;const c={id:item.id,title:item.title,revision:item.revision,draft:item.data.draft||'',messages:item.data.messages};c.savedPayload=JSON.stringify({title:c.title,data:chatData(c)});c.savedDurability=result.confirmedDurability;c.hydrated=false;resultChats.push(c);}return resultChats;}
 async function saveCloudChats(){if(!accountEmail||!cloudReady)return;if(cloudFailed)throw Error(t('云端保存失败。刷新前请导出此对话。'));const email=accountEmail,epoch=accountIdentityRevision,queuedChats=[...chats];await serialCloud(async()=>{workspaceOwner(email,epoch);for(const c of queuedChats){workspaceOwner(email,epoch);if(c.deleting||c.deleted||!chats.includes(c)||!c.messages.length)continue;const data=chatData(c),signature=JSON.stringify({title:c.title,data});if(c.savedPayload===signature)continue;try{const r=await workspaceRequest({action:'saveChat',id:c.id,title:c.title,data,revision:c.revision||0});workspaceOwner(email,epoch);c.revision=r.revision;c.savedPayload=signature;c.savedDurability=r.confirmedDurability;}catch(e){if(accountEmail===email&&accountIdentityRevision===epoch){if(!(e.status===429&&e.code==='MEMORY_BUSY'))cloudFailed=true;if(e.status===401)requestReauthentication(email);else showError(e.message+t('更改仍保留在当前页面。'));}throw e;}}});}
 async function saveCloudChatsConfirmed(expectedEmail,chatId){
  const epoch=accountIdentityRevision;
@@ -327,3 +327,45 @@ window.addEventListener('pageshow',event=>{if(event.persisted)loadServerIdentity
 
 checkClusterHealth();
 setInterval(()=>{if(!document.hidden)checkClusterHealth();},15000);
+
+// Keep Windows conversations visible in an open account tab without interrupting editing.
+let readingDesktopChats = false;
+let desktopSnapshot = '', desktopSnapshotEpoch = -1;
+async function refreshDesktopChats() {
+  if (document.hidden || !accountEmail || !cloudReady || busy || realtimeActive || cloudHydrating || readingDesktopChats) return;
+  const owner = accountEmail, epoch = accountIdentityRevision;
+  readingDesktopChats = true;
+  try {
+    const readPage = data => sendWorkspaceRequest(data, owner, epoch, true);
+    const firstPage = await readPage({action:'listChats',paginationProtocol:1,offset:0});
+    if (epoch === desktopSnapshotEpoch && firstPage.snapshot === desktopSnapshot) return;
+    const remote = await loadCloudChats(firstPage,readPage);
+    if (owner !== accountEmail || epoch !== accountIdentityRevision || busy || realtimeActive || !cloudReady) return;
+    let changed = false;
+    for (const next of remote) {
+      if (!next.id.startsWith('win-')) continue;
+      const previous = chats.find(chat => chat.id === next.id);
+      if (!previous) { chats.unshift(next); changed = true; continue; }
+      if (next.revision <= previous.revision || previous.deleting || previous.hydrating ||
+          (previous === current && $('prompt').value !== (previous.draft || '')) ||
+          JSON.stringify({title:previous.title,data:chatData(previous)}) !== previous.savedPayload) continue;
+      Object.assign(previous,next);
+      changed = true;
+    }
+    const remoteIds = new Set(remote.map(chat => chat.id));
+    for (const chat of [...chats]) {
+      if (!chat.id.startsWith('win-') || remoteIds.has(chat.id) || chat === current ||
+          chat.deleting || !chat.savedPayload || JSON.stringify({title:chat.title,data:chatData(chat)}) !== chat.savedPayload) continue;
+      chats.splice(chats.indexOf(chat),1);
+      changed = true;
+    }
+    desktopSnapshotEpoch = epoch;
+    desktopSnapshot = firstPage.snapshot;
+    if (changed) render();
+  } catch { /* The next visible refresh retries a temporary disconnect. */ }
+  finally { readingDesktopChats = false; }
+}
+if (typeof window !== 'undefined' && typeof window.setInterval === 'function') {
+  window.setInterval(refreshDesktopChats, 5000);
+  window.addEventListener('focus',refreshDesktopChats);
+}

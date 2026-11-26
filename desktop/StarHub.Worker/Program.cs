@@ -34,6 +34,7 @@ try
     store.MarkInterruptedTasks();
     WindowsHost.Log("worker.log", "Started.");
     var active = new List<Task>();
+    var chats = SyncChatsAsync(store, account, shutdown.Token);
     var memories = SyncAccountAsync(store, account, shutdown.Token);
     var device = Task.Run(() => CollectDeviceAsync(store, shutdown.Token));
     try
@@ -60,7 +61,7 @@ try
     {
         shutdown.Cancel();
         wait.Unregister(null);
-        await Task.WhenAll(active.Append(device).Append(memories));
+        await Task.WhenAll(active.Append(device).Append(memories).Append(chats));
         WindowsHost.Log("worker.log", "Stopped.");
     }
 
@@ -142,4 +143,20 @@ static async Task ExecuteAsync(LocalStore store, ChatEngine engine, DesktopAccou
     store.FinishTask(run);
     TaskNotification.Post(run.State);
     WindowsHost.Log("worker.log", $"Run {run.Id} · {run.State}.");
+}
+
+static async Task SyncChatsAsync(LocalStore store, DesktopAccountStore account, CancellationToken token)
+{
+    while (!token.IsCancellationRequested)
+    {
+        try
+        {
+            if (account.ReadProfile() is { ChatToken: not null, MemoryOwner: not null } profile &&
+                await store.UploadNextChatAsync(profile, token)) continue;
+        }
+        catch (Exception e) when (e is HttpRequestException or IOException or OperationCanceledException or Microsoft.Data.Sqlite.SqliteException or System.Text.Json.JsonException)
+        { WindowsHost.Log("worker.log", $"Chat sync: {e.GetType().Name}."); }
+        try { await Task.Delay(TimeSpan.FromSeconds(3), token); }
+        catch (OperationCanceledException) when (token.IsCancellationRequested) { return; }
+    }
 }

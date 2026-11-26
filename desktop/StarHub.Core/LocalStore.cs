@@ -25,8 +25,8 @@ public sealed partial class LocalStore
         using var transaction = connection.BeginTransaction(deferred: false);
         using var schemaVersion = Command(connection, "PRAGMA user_version", transaction);
         long version = (long)schemaVersion.ExecuteScalar()!;
-        if (version is < 0 or > 8) throw new StarHubException("This data folder needs a newer version of Star Hub.");
-        if (version == 8)
+        if (version is < 0 or > 9) throw new StarHubException("This data folder needs a newer version of Star Hub.");
+        if (version == 9)
         {
             transaction.Commit();
             return;
@@ -89,8 +89,21 @@ public sealed partial class LocalStore
         using var learning = Command(connection, LearningSchema, transaction);
         learning.ExecuteNonQuery();
         using var memories = Command(connection, """
+            CREATE TABLE IF NOT EXISTS chat_upload(id TEXT PRIMARY KEY, owner TEXT NOT NULL, dirty INTEGER NOT NULL DEFAULT 1, revision INTEGER NOT NULL DEFAULT 0, sending TEXT, sent_dirty INTEGER, attempted INTEGER NOT NULL DEFAULT 0);
+            CREATE TRIGGER IF NOT EXISTS queue_new_turn AFTER INSERT ON turns BEGIN
+                UPDATE chat_upload SET dirty=dirty+1 WHERE id=NEW.conversation_id;
+            END;
+            CREATE TRIGGER IF NOT EXISTS queue_changed_turn AFTER UPDATE ON turns BEGIN
+                UPDATE chat_upload SET dirty=dirty+1 WHERE id=NEW.conversation_id;
+            END;
+            CREATE TRIGGER IF NOT EXISTS queue_chat_update AFTER UPDATE ON conversations BEGIN
+                UPDATE chat_upload SET dirty=dirty+1 WHERE id=NEW.id;
+            END;
+            CREATE TRIGGER IF NOT EXISTS queue_chat_delete AFTER DELETE ON conversations BEGIN
+                UPDATE chat_upload SET dirty=dirty+1 WHERE id=OLD.id;
+            END;
             CREATE TABLE IF NOT EXISTS account_memory(owner TEXT PRIMARY KEY, content TEXT NOT NULL);
-            PRAGMA user_version=8;
+            PRAGMA user_version=9;
             """, transaction);
         memories.ExecuteNonQuery();
         transaction.Commit();
@@ -130,6 +143,25 @@ public sealed partial class LocalStore
         return conversations;
     }
 
+    public string? ConversationOwner(string id)
+    {
+        using var db = Open();
+        using var command = Command(db,"SELECT owner FROM chat_upload WHERE id=$id",values:[("$id",id)]);
+        return command.ExecuteScalar() as string;
+    }
+
+    public void CreateAccountConversation(string id, string title, string? project, string owner)
+    {
+        using var db = Open();
+        using var tx = db.BeginTransaction();
+        using var create = Command(db, "INSERT INTO conversations(id,title,updated,project_id) VALUES($id,$title,$now,$project)",
+            tx, ("$id",id), ("$title",title), ("$now",Now()), ("$project",project));
+        create.ExecuteNonQuery();
+        using var queue = Command(db,"INSERT INTO chat_upload(id,owner) VALUES($id,$owner)",tx,("$id",id),("$owner",owner));
+        queue.ExecuteNonQuery();
+        tx.Commit();
+    }
+
     public Turn StartTurn(string conversationId, string prompt, string model, Attachment? file, string? projectId = null,
         bool localOnly = false)
     {
@@ -145,7 +177,7 @@ public sealed partial class LocalStore
         using var transaction = connection.BeginTransaction();
         using var conversation = Command(connection, """
             INSERT INTO conversations(id, title, updated, project_id) VALUES ($conversation, $title, $now, $project)
-            ON CONFLICT(id) DO UPDATE SET updated = excluded.updated WHERE conversations.project_id IS excluded.project_id
+            ON CONFLICT(id) DO UPDATE SET updated = excluded.updated, title = CASE WHEN NOT EXISTS (SELECT 1 FROM turns WHERE conversation_id=excluded.id) THEN excluded.title ELSE conversations.title END WHERE conversations.project_id IS excluded.project_id
             """, transaction, ("$conversation", conversationId), ("$title", title), ("$now", now), ("$project", projectId));
         if (conversation.ExecuteNonQuery() != 1) throw new StarHubException("Open this conversation from its own project.");
         using var turn = Command(connection, """

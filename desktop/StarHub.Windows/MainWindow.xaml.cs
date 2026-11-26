@@ -237,11 +237,22 @@ public sealed partial class MainWindow : Window
         Composer.Focus(FocusState.Programmatic);
     }
 
-    private void NewClicked(object sender, RoutedEventArgs args) => Try(NewConversation);
+    private void NewAccountConversation()
+    {
+        if (request is not null || VoiceBusy) return;
+        NewConversation();
+        if (accountProfile?.MemoryOwner is { } owner)
+        {
+            store.CreateAccountConversation(conversationId, T("New conversation"), currentProject?.Id, owner);
+            RefreshHistory();
+        }
+    }
+
+    private void NewClicked(object sender, RoutedEventArgs args) => Try(NewAccountConversation);
     private void NewShortcut(KeyboardAccelerator sender, KeyboardAcceleratorInvokedEventArgs args)
     {
         args.Handled = true;
-        Try(NewConversation);
+        Try(NewAccountConversation);
     }
 
     private void ToggleSidebar(object sender, RoutedEventArgs args) => Workspace.IsPaneOpen = !Workspace.IsPaneOpen;
@@ -329,6 +340,16 @@ public sealed partial class MainWindow : Window
         if (narrow) Workspace.IsPaneOpen = false;
         var recent = store.ReadTurns(conversationId, maxRecent: 10);
         var options = Options(prompt);
+        string? owner = accountProfile?.MemoryOwner;
+        string? previousOwner = store.ConversationOwner(conversationId);
+        if (previousOwner is not null && owner != previousOwner)
+        {
+            conversationId = Guid.NewGuid().ToString("N");
+            recent = [];
+            PaintTurns();
+        }
+        if (owner is not null && store.FindConversation(conversationId) is null)
+            store.CreateAccountConversation(conversationId, T("New conversation"), currentProject?.Id, owner);
         bool allowStartupFollowUp = firstComputerRequest && recent.Count == 0;
         firstComputerRequest = false;
         if ((WorkbookLesson.ResumeRequested(prompt) || WorkbookLesson.StartRequested(prompt)) && settings.OperateComputer &&

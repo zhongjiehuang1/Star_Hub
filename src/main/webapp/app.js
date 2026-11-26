@@ -18,7 +18,7 @@ function showError(message) { $('error').textContent = errorText(message); $('er
 function newChat() {
   if (busy || realtimeActive) return;
   if (current) current.draft = $('prompt').value;
-  let blank = chats.find(chat => chat.messages.length === 0);
+  let blank = chats.find(chat => chat.messages.length === 0 && !chat.id.startsWith("win-"));
   if (!blank) {
     blank = {id: crypto.randomUUID(), title: t("新的对话"), messages: [], draft: ''};
     chats.unshift(blank);
@@ -248,7 +248,7 @@ function render({toBottom = false} = {}) {
   historySignature = nextHistory;
   $('history').replaceChildren();
   for (const chat of chats) {
-    if (!chat.messages.length) continue;
+    if (!chat.messages.length && !chat.id.startsWith("win-")) continue;
     const row = document.createElement('div'); row.className = 'history-row';
     const button = document.createElement('button'); button.textContent = chat.messages.length?chat.title:t('新的对话');
     button.className = `history-chat${chat === current ? ' active' : ''}`; button.disabled = busy;
@@ -276,7 +276,7 @@ function render({toBottom = false} = {}) {
     const row = document.createElement('article'); row.className = `message ${message.role}`;
     const avatar = document.createElement('div'); avatar.className = 'avatar'; avatar.textContent = message.role === 'user' ? t("你") : '✳';
     const body = document.createElement('div'); body.className = 'message-body';
-    const label = document.createElement('div'); label.className = 'message-label'; label.textContent = message.role === 'user' ? t("你") : `${message.providerName} · ${message.model}`;
+    const label = document.createElement('div'); label.className = 'message-label'; label.textContent = message.role === 'user' ? t("你") : [message.providerName, message.model].filter(Boolean).join(' · ') || 'Star Hub';
     const content = document.createElement('div'); content.className = 'message-content';
     if(message.role==='assistant')body.append(label);
     if(message.role==='assistant'&&(message.startedAt||message.reasoningSummary||message.thinkingSeconds!=null)){

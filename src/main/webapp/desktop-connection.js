@@ -2,6 +2,7 @@
 
 window.StarHubDesktopConnection = (() => {
   const params = new URLSearchParams(location.search);
+  const syncChats = params.get('desktopChats') === '1';
   const port = Number(params.get('desktopPort'));
   const state = params.get('desktopState') || '';
   const challenge = params.get('desktopChallenge') || '';
@@ -58,8 +59,8 @@ window.StarHubDesktopConnection = (() => {
       }
       status.textContent = '';
       message.textContent = email
-        ? text(`Connect as ${email}. The desktop app will receive your saved OpenAI key and your chat model from this browser. When account memory is enabled, saved notes sync with this PC. Desktop conversations, files and device readings stay on this PC.`,
-               `以 ${email} 连接。桌面应用会读取你已保存的 OpenAI 密钥及此浏览器选用的对话模型。开启账号记忆后，保存的记忆会与这台电脑同步。桌面对话、文件及设备读数保存在本机。`)
+        ? text(`Connect as ${email}. The desktop app will receive your saved OpenAI key and your chat model from this browser. When account memory is enabled, saved notes sync with this PC.${syncChats ? ' New desktop chats and their messages and replies will sync to this Star Hub account.' : ''}`,
+               `以 ${email} 连接。桌面应用会读取你已保存的 OpenAI 密钥及此浏览器选用的对话模型。开启账号记忆后，保存的记忆会与这台电脑同步。${syncChats ? '新建桌面对话、提问和回复将同步到此 Star Hub 账号。' : ''}`)
         : text('Sign in with your Star Hub account, then approve this connection.', '请登录 Star Hub 账号，然后确认连接。');
       action.textContent = email ? text('Connect this PC', '连接这台电脑') : text('Sign in', '登录');
       action.onclick = email ? approve : () => {
@@ -80,7 +81,7 @@ window.StarHubDesktopConnection = (() => {
       const response = await fetch('api/account', {
         method: 'POST', cache: 'no-store',
         headers: {'Content-Type': 'application/json', 'X-Starhub-Client': 'web'},
-        body: JSON.stringify({action: 'desktopGrant', expectedEmail: email, challenge, model})
+        body: JSON.stringify({action: 'desktopGrant', syncChats, expectedEmail: email, challenge, model})
       });
       if (response.status === 401 || response.status === 409) { await refresh(); return; }
       const result = await response.json();

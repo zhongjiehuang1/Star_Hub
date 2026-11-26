@@ -20,7 +20,7 @@ public sealed partial class MainWindow
         ScheduledTasks.Text = T("Scheduled tasks");
         Settings.Text = T("Settings");
         UpdateOfflineSetup();
-        MemoryReconnect.Content = WorkText("连接账号记忆", "Connect account memory");
+        MemoryReconnect.Content = WorkText("连接账号同步", "Connect account sync");
         UpdateAccountLabel();
         AutomationProperties.SetName(ToggleConversationSidebar, T("Toggle conversation sidebar"));
         ToolTipService.SetToolTip(ToggleConversationSidebar, T("Conversations"));

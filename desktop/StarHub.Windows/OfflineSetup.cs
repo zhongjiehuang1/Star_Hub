@@ -61,7 +61,7 @@ public sealed partial class MainWindow
     private void ResumeMemoryConnection()
     {
         var profile = accountProfile;
-        SetMemoryReconnect(profile is not null && !profile.CanRestoreMemory);
+        SetMemoryReconnect(profile is not null && (!profile.CanRestoreMemory || profile.ChatToken is null));
         if (profile?.CanRestoreMemory == true) _ = RefreshAccountMemoryAsync(profile);
     }
 

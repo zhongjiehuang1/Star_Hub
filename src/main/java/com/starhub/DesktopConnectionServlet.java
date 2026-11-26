@@ -18,8 +18,10 @@ public final class DesktopConnectionServlet extends HttpServlet {
             error(response, 403, "INVALID_CLIENT");
             return;
         }
-        byte[] body = request.getInputStream().readNBytes(4097);
-        if (body.length > 4096) { error(response, 413, "INVALID_REQUEST"); return; }
+        boolean chats = "chat".equals(request.getHeader("X-Starhub-Scope"));
+        int limit = chats ? 4_000_000 : 4096;
+        byte[] body = request.getInputStream().readNBytes(limit + 1);
+        if (body.length > limit) { error(response, 413, "INVALID_REQUEST"); return; }
         JsonNode input;
         try { input = ModelGateway.JSON.readTree(body); }
         catch (IOException invalid) { error(response, 400, "INVALID_REQUEST"); return; }
@@ -29,12 +31,22 @@ public final class DesktopConnectionServlet extends HttpServlet {
             var config = AccountServlet.config();
             String authorization = request.getHeader("Authorization");
             boolean memory = authorization != null;
-            JsonNode grant = memory ? DesktopMemory.decode(config, authorization, Instant.now())
+            if (chats && (authorization == null || !authorization.startsWith("Bearer "))) { error(response,401,"CONNECTION_EXPIRED"); return; }
+            JsonNode grant = chats ? DesktopScope.decode(config,authorization.substring(7),Instant.now(),DesktopChats.PURPOSE,DesktopChats.LIFETIME) : memory ? DesktopMemory.decode(config, authorization, Instant.now())
                     : DesktopConnection.decode(config, input.path("code").asText(), input.path("verifier").asText(), Instant.now());
             if (grant == null) { error(response, 401, "CONNECTION_EXPIRED"); return; }
             var storage = FileStorage.get();
             storage.ensureReady();
             AtomicDatabase.Work<ObjectNode> work = conn -> {
+                if (chats) {
+                    if (storage.atomic != null) {
+                        ObjectNode mutation = ((ObjectNode) input).deepCopy();
+                        mutation.put("action", input.path("deleted").asBoolean() ? "deleteChat" : "saveChat");
+                        storage.atomic.transientCapacity(conn, WorkspaceMutationBudget.estimate(
+                            conn, grant.path("user").asLong(), "/api/workspace", mutation));
+                    }
+                    return DesktopChats.save(conn, grant, input);
+                }
                 if (!memory) return DesktopConnection.redeem(conn, config, grant);
                 if (storage.atomic != null && !"read".equals(input.path("action").asText()))
                     storage.atomic.transientCapacity(conn, WorkspaceMutationBudget.MEMORY_BYTES);
