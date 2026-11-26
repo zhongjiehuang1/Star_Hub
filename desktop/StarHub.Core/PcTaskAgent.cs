@@ -5,7 +5,7 @@ namespace StarHub.Core;
 public sealed record PcTaskStep(string Tool, bool Succeeded, string Summary, string? Pdf = null);
 public sealed record PcTaskResult(bool Succeeded, string Summary, object? Evidence = null, string? Pdf = null);
 public sealed record PcTaskRun(string Reply, IReadOnlyList<PcTaskStep> Steps, bool Finished,
-    IReadOnlyList<Source>? Sources = null, string? Detail = null);
+    IReadOnlyList<Source>? Sources = null, string? Detail = null, string DiagnosticCode = "", WorkReceipt? Work = null);
 
 public sealed class PcTaskAgent(ProviderClient client)
 {

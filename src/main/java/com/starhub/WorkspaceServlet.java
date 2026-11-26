@@ -44,7 +44,7 @@ public final class WorkspaceServlet extends HttpServlet {
    if(Set.of("listMemories","setMemoryEnabled","deleteMemory","editMemory","saveLocalMemory","saveSemanticMemory").contains(action)){
     String generation=(String)session.getAttribute("starhub.account.generation");
     byte[] key;try{key=Base64.getDecoder().decode(AccountServlet.config().getProperty("vault.key",""));}catch(IllegalArgumentException invalid){throw StorageFailure.unavailable();}
-    if(action.equals("listMemories")){send(res,200,AccountMemories.state(c,user,generation,key));return;}
+    if(action.equals("listMemories")){send(res,200,AccountMemories.state(c,user,generation,key).put("owner",generation));return;}
     if(!body.path("memoryRevision").isIntegralNumber()||!body.path("memoryRevision").canConvertToLong())throw new StorageFailure(400,"INVALID_MEMORY","记忆版本无效。");
     long revision=body.path("memoryRevision").longValue();
     if(action.equals("setMemoryEnabled")){if(!body.path("enabled").isBoolean())throw new StorageFailure(400,"INVALID_MEMORY","记忆设置无效。");send(res,200,AccountMemories.setEnabled(c,user,generation,revision,body.path("enabled").booleanValue()));return;}

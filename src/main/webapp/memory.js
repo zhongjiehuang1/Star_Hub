@@ -2,6 +2,8 @@
 // Account memory is opt-in and stays separate from provider operation receipts.
 const StarMemory=(()=>{
  let state=null,owner='',epoch=0,busy=false,statusText='',viewVersion=0,activityVersion=0,summary=null;
+ let cached=null,flushing=false;
+ const volatileDrafts=new Map();
  const zh=()=>typeof language!=='undefined'&&language==='zh';
  const label=(a,b)=>zh()?a:b;
  const element=(tag,text)=>{const node=document.createElement(tag);if(text!==undefined)node.textContent=text;return node;};
@@ -9,14 +11,83 @@ const StarMemory=(()=>{
  function status(message){statusText=message||'';const node=document.getElementById('memoryStatus');if(node)node.textContent=statusText;}
  function activity(token,version,zhText,enText){if(version!==activityVersion||!token||token.account!==accountEmail||token.accountRevision!==accountIdentityRevision)return;const node=document.getElementById('memoryActivity');if(node){node.textContent=label(zhText,enText);node.hidden=!node.textContent;}}
  function clearActivity(){activityVersion++;const node=document.getElementById('memoryActivity');if(node){node.textContent='';node.hidden=true;}}
+ const draftPrefix='starhub.memory.draft.';
+ function draftKeys(){
+  try{return Array.from({length:localStorage.length},(_,i)=>localStorage.key(i)).filter(k=>k?.startsWith(draftPrefix));}
+  catch{return [];}
+ }
+ function readQueue(snapshot){
+  if(!snapshot.owner)return [];
+  const prefix=draftPrefix+snapshot.owner+'.', drafts=new Map();
+  for(const key of draftKeys().filter(k=>k.startsWith(prefix))){
+   try{const d=JSON.parse(localStorage.getItem(key));
+    if(d&&key===prefix+d.key&&typeof d.id==='string'&&(d.text===null||typeof d.text==='string'))drafts.set(key,d);
+   }catch{}
+  }
+  for(const [key,d] of volatileDrafts)if(key.startsWith(prefix)){if(d)drafts.set(key,d);else drafts.delete(key);}
+  return [...drafts.values()].sort((a,b)=>a.time-b.time);
+ }
+ function storeDraft(snapshot,d,remove=false){
+  const key=draftPrefix+snapshot.owner+'.'+d.key;
+  try{
+   if(remove)localStorage.removeItem(key);else localStorage.setItem(key,JSON.stringify(d));
+   volatileDrafts.delete(key);
+  }catch{volatileDrafts.set(key,remove?null:d);}
+ }
+ function showSnapshot(snapshot){
+  const edits=readQueue(snapshot);
+  const memories=snapshot.memories.map(note=>({...note}));
+  for(const edit of edits){
+   const index=memories.findIndex(note=>note.id===edit.id);
+   if(index<0||edit.conflict)continue;
+   if(edit.text===null)memories.splice(index,1);else memories[index].text=edit.text;
+  }
+  state={...snapshot,memories};render();
+ }
  async function refresh(){
   const wanted=accountEmail,revision=accountIdentityRevision,view=viewVersion;if(!wanted)return;
   const next=await workspaceRequest({action:'listMemories'});if(viewVersion!==view||accountEmail!==wanted||accountIdentityRevision!==revision)return;
-  owner=wanted;epoch=revision;state=next;render();
+  if(cached?.email===wanted&&cached.epoch===revision&&cached.snapshot.owner===next.owner&&cached.snapshot.revision>next.revision)return;
+  owner=wanted;epoch=revision;cached={email:wanted,epoch:revision,snapshot:next};showSnapshot(next);
+ }
+ async function flush(){
+  if(flushing||!cached||cached.email!==accountEmail||cached.epoch!==accountIdentityRevision)return;
+  const email=accountEmail,identity=accountIdentityRevision,scope=cached.snapshot.owner;
+  if(!scope||!readQueue(cached.snapshot).some(e=>!e.conflict))return;
+  const active=()=>email===accountEmail&&identity===accountIdentityRevision;
+  flushing=true;
+  try{
+   for(let i=0;i<50&&active();i++){
+    const fresh=await workspaceRequest({action:'listMemories'});
+    if(!active()||fresh.owner!==scope)return;
+    cached={email,epoch:identity,snapshot:fresh};
+    const queue=readQueue(fresh),edit=queue.find(e=>!e.conflict);if(!edit)break;
+    const actual=fresh.memories.find(n=>n.id===edit.id)?.text??null;
+    if(actual!==edit.text&&actual===edit.before){
+     try{await workspaceRequest({action:edit.text===null?'deleteMemory':'editMemory',memoryId:edit.id,
+      ...(edit.text===null?{}:{text:edit.text}),memoryRevision:fresh.revision});}
+     catch(e){if(e.code==='MEMORY_CHANGED')continue;if(e.status!==400&&e.code!=='MEMORY_DUPLICATE')throw e;edit.conflict=true;}
+    }else if(actual!==edit.text)edit.conflict=true;
+    if(!active())return;
+    if(readQueue(fresh).some(e=>e.key===edit.key))storeDraft(fresh,edit,!edit.conflict);
+   }
+   if(active()&&current()){await refresh();if(active())status('');}
+  }catch{if(active()&&current())status(volatileDrafts.size?label('请保持本页打开，联网后会自动同步。','Keep this tab open to sync when connected.'):label('修改已保存在这台设备上，联网后会自动同步。','Changes are saved on this device and will sync when connected.'));}
+  finally{flushing=false;}
  }
  async function change(action,data={}){
   if(!current()||busy||!state)return;busy=true;const view=viewVersion;render();
-  try{await workspaceRequest({action,memoryRevision:state.revision,...data});if(viewVersion===view&&current()){await refresh();if(viewVersion===view)status('');}}
+  try{
+   if((action==='editMemory'||action==='deleteMemory')&&cached?.snapshot.owner&&current()){
+    const snapshot=cached.snapshot,queue=readQueue(snapshot);
+    const old=queue.find(e=>e.id===data.memoryId);
+    const before=old&&!old.conflict?old.before:snapshot.memories.find(n=>n.id===data.memoryId)?.text;
+    if(before===undefined)return;
+    storeDraft(snapshot,{key:crypto.randomUUID(),time:Date.now(),id:data.memoryId,before,text:action==='deleteMemory'?null:data.text});
+    for(const prior of queue.filter(e=>e.id===data.memoryId))storeDraft(snapshot,prior,true);
+    showSnapshot(snapshot);await flush();return;
+   }
+   await workspaceRequest({action,memoryRevision:state.revision,...data});if(viewVersion===view&&current()){await refresh();if(viewVersion===view)status('');}}
   catch(error){if(viewVersion===view&&current()){status(errorText(error.message));if(error.code==='MEMORY_CHANGED')await refresh().catch(()=>{});}}
   finally{if(viewVersion===view){busy=false;render();}}
  }
@@ -62,14 +133,37 @@ const StarMemory=(()=>{
    generate.type='button';generate.disabled=busy;generate.onclick=generateSummary;host.append(generate);
    if(cached){const text=element('p',cached.text);text.className='memory-summary';host.append(text);}
   }
+  if(cached?.snapshot.owner&&current()){
+   for(const draft of readQueue(cached.snapshot).filter(e=>e.conflict)){
+    const detail=element('p',label('这条修改与网站版本有冲突：','Conflicting draft: ')+(draft.text??draft.before));
+    const keep=element('button',label('采用网站版本','Use website version'));keep.type='button';keep.onclick=()=>{
+     const snapshot=cached.snapshot;storeDraft(snapshot,draft,true);showSnapshot(snapshot);
+    };host.append(detail,keep);
+   }
+  }
   const list=element('ul');list.setAttribute('aria-label',label('已保存的记忆','Saved memories'));
   for(const entry of state.memories||[]){const row=element('li'),text=element('span',entry.text),edit=element('button',label('编辑','Edit')),del=element('button',label('删除','Delete'));edit.type=del.type='button';edit.disabled=del.disabled=busy;edit.onclick=()=>{const value=window.prompt(label('修改记忆','Edit memory'),entry.text);if(value!==null)change('editMemory',{memoryId:entry.id,text:value});};del.onclick=()=>{if(window.confirm(label('删除这条记忆？','Delete this memory?')))change('deleteMemory',{memoryId:entry.id});};row.append(text,document.createTextNode(' '),edit,document.createTextNode(' '),del);list.append(row);}
   if(!list.children.length)host.append(element('p',label('还没有保存的记忆。','No saved memories yet.')));else host.append(list);
   const message=element('p',statusText);message.id='memoryStatus';message.setAttribute('role','status');host.append(message);
  }
  function reset(){viewVersion++;state=null;owner='';epoch=0;busy=false;statusText='';render();}
- function open(){reset();const view=viewVersion,wanted=accountEmail,revision=accountIdentityRevision;if(!wanted)return;refresh().catch(e=>{if(viewVersion===view&&accountEmail===wanted&&accountIdentityRevision===revision)status(errorText(e.message));});}
- function install(){const settings=document.getElementById('accountSettings'),close=document.getElementById('closeAccountSettings');if(!settings||!close)return;const panel=element('section');panel.id='memoryPanel';settings.insertBefore(panel,close);const form=document.getElementById('chatForm');if(form){const notice=element('p');notice.id='memoryActivity';notice.hidden=true;notice.setAttribute('role','status');notice.setAttribute('aria-live','polite');form.before(notice);}document.addEventListener('starhub:account-settings-opening',open);document.addEventListener('starhub:account-settings-closing',reset);document.addEventListener('starhub:account-changed',()=>{summary=null;reset();clearActivity();});settings.addEventListener('cancel',reset);settings.addEventListener('close',()=>{if(!settings.open)reset();});document.addEventListener('starhub:languagechanged',render);render();}
+ function open(){reset();const view=viewVersion,wanted=accountEmail,revision=accountIdentityRevision;if(!wanted)return;if(cached?.email===wanted&&cached.epoch===revision){owner=wanted;epoch=revision;showSnapshot(cached.snapshot);}refresh().then(flush).catch(e=>{if(viewVersion===view&&accountEmail===wanted&&accountIdentityRevision===revision)status(errorText(e.message));});}
+ async function resumePending(){
+  if(!accountEmail||flushing||busy)return;
+  if(cached?.email===accountEmail&&cached.epoch===accountIdentityRevision){await flush();return;}
+  if(!draftKeys().length)return;
+  const email=accountEmail,identity=accountIdentityRevision;
+  try{
+   const snapshot=await workspaceRequest({action:'listMemories'});
+   if(email!==accountEmail||identity!==accountIdentityRevision||!snapshot.owner)return;
+   cached={email,epoch:identity,snapshot};
+   await flush();
+  }catch{}
+ }
+ function install(){const settings=document.getElementById('accountSettings'),close=document.getElementById('closeAccountSettings');if(!settings||!close)return;const panel=element('section');panel.id='memoryPanel';settings.insertBefore(panel,close);const form=document.getElementById('chatForm');if(form){const notice=element('p');notice.id='memoryActivity';notice.hidden=true;notice.setAttribute('role','status');notice.setAttribute('aria-live','polite');form.before(notice);}document.addEventListener('starhub:account-settings-opening',open);document.addEventListener('starhub:account-settings-closing',reset);document.addEventListener('starhub:account-changed',()=>{cached=null;summary=null;reset();clearActivity();void resumePending();});settings.addEventListener('cancel',reset);settings.addEventListener('close',()=>{if(!settings.open)reset();});document.addEventListener('starhub:languagechanged',render);
+  const reconnect=()=>{if(flushing||busy)return;if(settings.open)refresh().then(flush).catch(()=>{});else void resumePending();};
+  window.addEventListener?.('online',reconnect);window.addEventListener?.('focus',reconnect);
+  window.setInterval?.(()=>{if(draftKeys().length||volatileDrafts.size)void resumePending();},60000);render();}
  function mayExtract(text){
   if(typeof text!=='string'||text.length>120||/[\r\n"“”‘’「」<>]/.test(text))return false;
   if(/邮件|收件|发件|转发|邮箱|信件|gmail|e-?mail|inbox|forwarded|密码|口令|验证码|密钥|身份证|护照|电话|手机|住址|地址|银行卡|疾病|诊断|药物|宗教|政治|password|secret|token|https?:\/\/|@|\d{6,}/i.test(text))return false;

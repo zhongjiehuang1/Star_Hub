@@ -10,6 +10,25 @@ namespace StarHub.Windows;
 
 public sealed partial class MainWindow
 {
+    private async Task RunRecyclePdfAsync(string prompt, string? file, string? projectId)
+    {
+        await RunComputerTaskAsync(prompt, projectId, LocalPcModel, async (_, token, _) =>
+        {
+            var result = file is null
+                ? new PcTaskResult(false, "This conversation has no saved PDF to move to the Recycle Bin.")
+                : await WindowsRecycleBin.RecyclePdfAsync(file, token);
+            string name = file is null ? "" : "\n\n" + MarkdownStep(Path.GetFileName(file));
+            string code = result.Succeeded ? "" : result.Evidence is int hresult ? $"0x{hresult:X8}"
+                : file is null ? "missing_saved_pdf" : "not_recycled";
+            return new PcTaskRun(T(result.Summary) + name, [], result.Succeeded, Detail: "", DiagnosticCode: code);
+        }, "pdf_recycle");
+        if (file is not null && !File.Exists(file))
+        {
+            PaintTurns();
+            ScrollToBottom();
+        }
+    }
+
     private async Task RunPdfRequestAsync(string prompt, PdfRequest pdf)
     {
         string SayInDocumentLanguage(string chinese, string english) => pdf.Chinese ? chinese : english;
@@ -17,6 +36,7 @@ public sealed partial class MainWindow
         bool operate = settings.OperateComputer;
         var turn = store.StartTurn(conversationId, prompt, pdf.NeedsTopic ? PdfRequests.PromptModel : PdfRequests.DocumentModel,
             input, currentProject?.Id, localOnly: true);
+        using var diagnostic = DesktopDiagnostic.Start(accountProfile, pdf.NeedsTopic ? "pdf_brief" : "pdf_create");
         using var cancellation = new CancellationTokenSource(TimeSpan.FromMinutes(5));
         request = cancellation;
         SetSending(true);
@@ -84,6 +104,7 @@ public sealed partial class MainWindow
         }
         catch (UnauthorizedAccessException)
         {
+            diagnostic?.Finish(TurnState.Failed, "access_denied");
             turn = turn with
             {
                 State = TurnState.Failed,
@@ -94,6 +115,7 @@ public sealed partial class MainWindow
         }
         catch (IOException error)
         {
+            diagnostic?.Finish(TurnState.Failed, $"0x{error.HResult:X8}");
             WindowsHost.Log("desktop.log", $"PDF write: {error.GetType().Name} (0x{error.HResult:X8}).");
             turn = turn with
             {
@@ -105,6 +127,7 @@ public sealed partial class MainWindow
         }
         catch (Exception error)
         {
+            diagnostic?.Finish(TurnState.Failed, $"0x{error.HResult:X8}");
             string message = error is StarHubException ? T(error.Message) : SayInDocumentLanguage(
                 "PDF 生成失败，文件还未保存。", "PDF creation failed before the file was saved.");
             WindowsHost.Log("desktop.log", $"PDF creation: {error.GetType().Name} (0x{error.HResult:X8}).");
@@ -114,6 +137,7 @@ public sealed partial class MainWindow
         {
             try
             {
+                diagnostic?.Finish(turn.State);
                 store.FinishTurn(turn);
                 ShowResult(output, turn);
                 Say("");
@@ -178,7 +202,8 @@ public sealed partial class MainWindow
         var card = new StackPanel { Spacing = 7 };
         card.Children.Add(name);
         if (!export) card.Children.Add(location);
-        card.Children.Add(buttons);
+        if (File.Exists(file)) card.Children.Add(buttons);
+        else card.Children.Add(Label(T("This PDF is no longer at its saved location.")));
         panel.Children.Add(new Border
         {
             Child = card, Background = Brush("ComposerBrush"), CornerRadius = new CornerRadius(13), Padding = new Thickness(12)

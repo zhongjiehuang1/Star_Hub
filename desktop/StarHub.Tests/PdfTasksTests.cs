@@ -6,6 +6,29 @@ namespace StarHub.Tests;
 
 public sealed class PdfTasksTests
 {
+    [Theory]
+    [InlineData("把刚才的这个PDF删掉", true)]
+    [InlineData("请删除刚才生成的 PDF 文件。", true)]
+    [InlineData("把这份 PDF 移到回收站", true)]
+    [InlineData("Delete the last PDF.", true)]
+    [InlineData("不要把刚才的 PDF 删掉", false)]
+    [InlineData("怎样删除刚才的 PDF？", false)]
+    [InlineData("删掉桌面的所有 PDF", false)]
+    [InlineData("把刚才的 PDF 删掉，再删掉文件夹", false)]
+    public void RecyclesOnlyAnExplicitReferenceToTheSavedPdf(string prompt, bool expected)
+    {
+        Assert.Equal(expected, PdfRequests.IsRecycleRequest(prompt));
+        if (expected) Assert.Null(PdfRequests.Parse(prompt, []));
+    }
+
+    [Fact]
+    public void RecycleTargetUsesTheRecordedLatestPdfWithoutFallingBackToAnOlderFile()
+    {
+        var old = Turn("生成 PDF", "", PdfRequests.DocumentModel) with { GeneratedPdf = @"C:\Old.pdf" };
+        var newest = Turn("生成 PDF", "", PdfRequests.DocumentModel) with { GeneratedPdf = @"D:\新对账.pdf" };
+        Assert.Equal(newest.GeneratedPdf, PdfRequests.LatestSavedPath([old, newest, Turn("现在几点", "")]));
+        Assert.Null(PdfRequests.LatestSavedPath([Turn("聊天", "")]));
+    }
     [Fact]
     public void TopicReplyAndRetriedRequestsUseTheLocalPdfRoute()
     {

@@ -44,10 +44,10 @@ public sealed partial class MainWindow
         openAiReady = accountProfile is { } linked ? linked.ApiKey is not null : credentials.Read(ChatEngine.OpenAiCredential) is not null;
         modelChoices = [new(Provider.Automatic, "", T("Automatic")), .. ConnectedModels(includeCloudCatalog: true)];
         var desired = settings.ChatOpenAiModel ?? settings.OpenAiModel;
-        if (accountProfile is { } account)
+        if (accountProfile is not null)
         {
             chosenModel = modelChoices.FirstOrDefault(choice => choice.Engine == accountChoice?.Engine && choice.Id == accountChoice.Id) ??
-                modelChoices.FirstOrDefault(choice => choice.Engine == Provider.OpenAI && choice.Id == account.Model) ?? modelChoices[0];
+                modelChoices[0];
             return;
         }
         chosenModel = modelChoices.FirstOrDefault(choice => choice.Engine == settings.Provider &&

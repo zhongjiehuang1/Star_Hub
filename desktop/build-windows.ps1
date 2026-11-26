@@ -65,7 +65,11 @@ try {
     $digest = (Get-FileHash -Algorithm SHA256 $installer.FullName).Hash.ToLowerInvariant()
     [IO.File]::WriteAllText("$($installer.FullName).sha256", "$digest  $($installer.Name)" + [char]10,
         [Text.Encoding]::ASCII)
-    $commit = (git rev-parse HEAD).Trim()
+    $sourceStamp = Join-Path $PSScriptRoot '../SOURCE-COMMIT.txt'
+    $commit = if (Test-Path -LiteralPath $sourceStamp) {
+        (Get-Content -LiteralPath $sourceStamp -Raw).Trim()
+    } else { (git rev-parse HEAD).Trim() }
+    if ($commit -notmatch '^[0-9a-f]{40}$') { throw 'Invalid source commit.' }
     [ordered]@{
         version = $version
         platform = 'windows'

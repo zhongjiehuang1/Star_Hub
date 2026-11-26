@@ -11,12 +11,16 @@ import os
 from pathlib import Path
 import re
 import shutil
+import subprocess
 import tempfile
+import zipfile
 
 ASSET = "StarHub-Windows-x64-Setup.exe"
 MANIFEST = "starhub-windows.json"
 CHECKSUM = ASSET + ".sha256"
 FILES = (ASSET, CHECKSUM, MANIFEST)
+SOURCE = "StarHub-Windows-Source.zip"
+SOURCE_CHECKSUM = SOURCE + ".sha256"
 PREVIEW_PATH = "windows/preview"
 
 
@@ -37,7 +41,36 @@ def metadata(source):
             or (source / CHECKSUM).read_text(encoding="ascii").split() != [manifest["sha256"], ASSET]
             or digest(source / ASSET) != manifest["sha256"]):
         raise SystemExit("Windows release files did not match the manifest.")
+    if "sourceAsset" in manifest:
+        if (manifest["sourceAsset"] != SOURCE or manifest["sourceBytes"] != (source / SOURCE).stat().st_size
+                or (source / SOURCE_CHECKSUM).read_text(encoding="ascii").split() != [manifest["sourceSha256"], SOURCE]
+                or digest(source / SOURCE) != manifest["sourceSha256"]):
+            raise SystemExit("Windows source archive did not match the manifest.")
     return manifest
+
+
+def release_files(release):
+    return FILES + ((SOURCE, SOURCE_CHECKSUM) if "sourceAsset" in release else ())
+
+
+def bundle_source(assets, repository):
+    release = metadata(assets)
+    commit = release["commit"]
+    if not re.fullmatch(r"[0-9a-f]{40}", commit):
+        raise SystemExit("Expected an exact source commit from the verified Windows build.")
+    with tempfile.NamedTemporaryFile(prefix=".source-", suffix=".zip", dir=assets) as temporary:
+        subprocess.run(["git", "-C", str(repository), "archive", "--format=zip",
+                        "--output=" + temporary.name, commit, "desktop", "src/main/resources/catalog.json"], check=True)
+        with zipfile.ZipFile(temporary.name, "a", compression=zipfile.ZIP_DEFLATED) as archive:
+            archive.writestr("SOURCE-COMMIT.txt", commit + "\n")
+        path = assets / SOURCE
+        shutil.copyfile(temporary.name, path)
+    sha = digest(path)
+    (assets / SOURCE_CHECKSUM).write_text(f"{sha}  {SOURCE}\n", encoding="ascii")
+    release.update(sourceAsset=SOURCE, sourceSha256=sha, sourceBytes=path.stat().st_size)
+    (assets / MANIFEST).write_text(json.dumps(release, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    metadata(assets)
+    print(f"{SOURCE} · {path.stat().st_size} bytes · {sha}")
 
 
 def create_directory(path, group):
@@ -82,7 +115,7 @@ def attach_preview(downloads, archived, release, group, expected_sha):
         raise SystemExit("The Windows preview directory is a symlink.")
     replacing = target.exists()
     if replacing:
-        if any((target / asset).is_symlink() for asset in FILES):
+        if any((target / asset).is_symlink() for asset in FILES + (SOURCE, SOURCE_CHECKSUM)):
             raise SystemExit("The Windows preview contains a symlink.")
         current = metadata(target)
         if current == release:
@@ -93,7 +126,7 @@ def attach_preview(downloads, archived, release, group, expected_sha):
     with tempfile.TemporaryDirectory(prefix=".incoming-", dir=target.parent) as temp:
         staging = Path(temp) / "preview"
         create_directory(staging, group)
-        for asset in FILES:
+        for asset in release_files(release):
             os.link(archived / asset, staging / asset)
         if replacing:
             exchange_directories(staging, target)
@@ -118,12 +151,26 @@ def publish_locked(args, group):
     create_directory(downloads, group)
 
     page = old_page = old_page_hash = None
+    page_assets = {}
     landing = downloads / "index.html"
     if args.page:
         page = args.page.read_bytes()
         expected_links = [f'href="{PREVIEW_PATH}/{asset}"'.encode("ascii") for asset in (ASSET, CHECKSUM)]
-        if any(page.count(link) != 2 for link in expected_links) or landing.is_symlink():
+        if any(page.count(link) not in (1, 2) for link in expected_links) or landing.is_symlink():
             raise SystemExit("The page must link to the verified Windows preview and its checksum.")
+        if SOURCE.encode("ascii") in page and "sourceAsset" not in release:
+            raise SystemExit("The download page needs the source archive from the verified release.")
+        if "sourceAsset" in release and any(page.count(f'href="{PREVIEW_PATH}/{asset}"'.encode("ascii")) != 1
+                                             for asset in (SOURCE, SOURCE_CHECKSUM)):
+            raise SystemExit("The page must link to the Windows source archive and its checksum.")
+        for name, reference in (("download.css", b'href="download.css"'), ("download.js", b'src="download.js"')):
+            if reference in page and (file := args.page.with_name(name)).is_file():
+                target = downloads / name
+                if target.is_symlink():
+                    raise SystemExit(f"Download page asset is a symlink: {target}")
+                content = file.read_bytes()
+                if content != (target.read_bytes() if target.exists() else None):
+                    page_assets[target] = content
         old_page = landing.read_bytes()
         old_page_hash = hashlib.sha256(old_page).hexdigest()
         if page != old_page and old_page_hash != args.expect_page_sha256:
@@ -137,7 +184,7 @@ def publish_locked(args, group):
         try:
             os.chown(staging, 0, group)
             staging.chmod(0o750)
-            for asset in FILES:
+            for asset in release_files(release):
                 target = staging / asset
                 shutil.copyfile(args.assets / asset, target)
                 os.chown(target, 0, group)
@@ -152,6 +199,8 @@ def publish_locked(args, group):
         raise SystemExit("An archive for this version already contains different files.")
 
     attach_preview(downloads, archived, release, group, args.expect_preview_sha256)
+    for target, content in page_assets.items():
+        atomic_write(target, content, group)
     if page is not None and page != old_page:
         if landing.is_symlink() or digest(landing) != old_page_hash:
             raise SystemExit("The current download page changed. Check the live contents.")
@@ -170,4 +219,9 @@ if __name__ == "__main__":
     parser.add_argument("--page", type=Path)
     parser.add_argument("--expect-page-sha256")
     parser.add_argument("--expect-preview-sha256", help="Current installer digest when changing the preview")
-    publish(parser.parse_args())
+    parser.add_argument("--source-tree", type=Path, help="Package a Windows source ZIP from the verified build's commit")
+    options = parser.parse_args()
+    if options.source_tree:
+        bundle_source(options.assets, options.source_tree)
+    else:
+        publish(options)

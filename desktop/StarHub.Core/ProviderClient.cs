@@ -46,7 +46,7 @@ public sealed partial class ProviderClient : IDisposable
         };
         if (!string.IsNullOrWhiteSpace(route.Credential))
             request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", route.Credential);
-        var client = route.Provider == Provider.Ollama ? local : remote;
+        var client = route.Endpoint.IsLoopback ? local : remote;
         using var response = await client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken)
             .ConfigureAwait(false);
         if (!response.IsSuccessStatusCode) throw HttpError(response.StatusCode);

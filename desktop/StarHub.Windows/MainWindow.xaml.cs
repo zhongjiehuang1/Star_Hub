@@ -30,6 +30,8 @@ public sealed partial class MainWindow : Window
     private bool selectingHistory, loading, narrow, lastDeviceAnalysis, composing;
     private int compositionRevision;
     private Attachment? attachment;
+    private string? attachmentPath;
+    private bool firstComputerRequest = true;
     private CancellationTokenSource? request;
 
     public MainWindow()
@@ -43,7 +45,7 @@ public sealed partial class MainWindow : Window
         }
         store.MarkInterruptedChats();
         accountProfile = desktopAccount.ReadProfile();
-        engine = new ChatEngine(store, desktopAccount, providerClient);
+        engine = new ChatEngine(store, desktopAccount, providerClient, () => accountProfile);
         loading = true;
         InitializeComponent();
         hwnd = WinRT.Interop.WindowNative.GetWindowHandle(this);
@@ -93,6 +95,8 @@ public sealed partial class MainWindow : Window
         UpdateTools();
         UpdateRoute();
         Try(WindowsHost.EnsureWorkerRunning);
+        using var diagnostic = DesktopDiagnostic.Start(accountProfile, "desktop_start");
+        diagnostic?.Finish(TurnState.Completed);
     }
 
     private void ApplyTheme() => Shell.RequestedTheme = settings.Theme switch
@@ -137,6 +141,7 @@ public sealed partial class MainWindow : Window
 
     private void UpdateInputMode()
     {
+        UpdateResumeLearning();
         Composer.PlaceholderText = T(settings.OperateComputer ? "Tell this PC what to do" : "Type a message");
         StartAConversation.Text = T(settings.OperateComputer ? "What would you like to do?" : "What would you like to explore?");
         AskAQuestionOrAddAFile.Text = T(settings.OperateComputer ? "Type or speak. Try “open Notepad”." : "Type, speak, or attach a file.");
@@ -176,6 +181,7 @@ public sealed partial class MainWindow : Window
         if (loading || selectingHistory || request is not null || VoiceBusy || History.SelectedItem is not Conversation chat) return;
         Try(() =>
         {
+            firstComputerRequest = false;
             conversationId = chat.Id;
             Composer.Text = "";
             SetAttachment(null);
@@ -194,6 +200,7 @@ public sealed partial class MainWindow : Window
         lastDeviceAnalysis = turns.Count > 0 && turns[^1].Model == ChatEngine.DeviceAnalysisModel;
         foreach (var turn in turns) ShowResult(AddTurn(turn), turn);
         UpdateConversationHeader();
+        UpdateResumeLearning();
         Welcome.Visibility = turns.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
         UpdateRoute();
         ScrollToBottom();
@@ -210,6 +217,7 @@ public sealed partial class MainWindow : Window
     private void NewConversation()
     {
         if (request is not null || VoiceBusy) return;
+        firstComputerRequest = false;
         conversationId = Guid.NewGuid().ToString("N");
         selectingHistory = true;
         History.SelectedIndex = -1;
@@ -260,14 +268,15 @@ public sealed partial class MainWindow : Window
         {
             if (await ChooseFileAsync(Attachments.Extensions) is not { } file) return;
             using var input = await file.OpenStreamForReadAsync();
-            SetAttachment(await Attachments.ReadAsync(file.Name, input));
+            SetAttachment(await Attachments.ReadAsync(file.Name, input), file.Path);
             Say("");
         });
     }
 
-    private void SetAttachment(Attachment? file)
+    private void SetAttachment(Attachment? file, string? path = null)
     {
         attachment = file;
+        attachmentPath = path;
         FileLabel.Text = file?.Name ?? "";
         FileRow.Visibility = file is null ? Visibility.Collapsed : Visibility.Visible;
         UpdateRoute();
@@ -313,6 +322,22 @@ public sealed partial class MainWindow : Window
         if (narrow) Workspace.IsPaneOpen = false;
         var recent = store.ReadTurns(conversationId, maxRecent: 10);
         var options = Options(prompt);
+        bool allowStartupFollowUp = firstComputerRequest && recent.Count == 0;
+        firstComputerRequest = false;
+        if ((WorkbookLesson.ResumeRequested(prompt) || WorkbookLesson.StartRequested(prompt)) && settings.OperateComputer &&
+            await OpenLearningFromComposerAsync(prompt, options.ProjectId, allowStartupFollowUp)) return;
+        if (LocalWork.Identify(prompt) is { } work)
+        {
+            if (!settings.OperateComputer) ShowComputerModeHint(prompt, options.ProjectId);
+            else await RunLocalWorkAsync(prompt, work, options.ProjectId, allowStartupFollowUp);
+            return;
+        }
+        if (PdfRequests.IsRecycleRequest(prompt))
+        {
+            if (!settings.OperateComputer) ShowComputerModeHint(prompt, options.ProjectId);
+            else await RunRecyclePdfAsync(prompt, PdfRequests.LatestSavedPath(recent), options.ProjectId);
+            return;
+        }
         var plan = PcCommands.Parse(prompt);
         var direct = PcDirect.Parse(prompt);
         bool device = ChatEngine.UsesDeviceAnalysis(prompt, options, attachment, lastDeviceAnalysis);
@@ -353,6 +378,7 @@ public sealed partial class MainWindow : Window
         }
 
         using var cancellation = new CancellationTokenSource();
+        using var diagnostic = DesktopDiagnostic.Start(accountProfile, device ? "device_analysis" : "chat");
         request = cancellation;
         SetSending(true);
         Say(device ? "Reading local device data…" : "Waiting for the model…");
@@ -392,6 +418,7 @@ public sealed partial class MainWindow : Window
                 ScrollToBottom();
                 timer.Start();
             }, text => { lock (buffer) buffer.Append(text); }, cancellation.Token);
+            diagnostic?.Finish(turn.State);
             timer.Stop();
             if (resultPanel is not null) ShowResult(resultPanel, turn);
             Say(turn.State == TurnState.Completed ? "" : turn.Detail);
@@ -451,6 +478,7 @@ public sealed partial class MainWindow : Window
     {
         panel.Children.Clear();
         if (turn.GeneratedPdf is { } pdf) ShowPdfFile(panel, pdf);
+        if (turn.LocalWork is { } work) ShowWorkFile(panel, work);
         if (turn.Reply.Length > 0)
         {
             MarkdownView.AddBlocks(panel, turn.Reply, Brush("SideRailBrush"));

@@ -155,25 +155,70 @@ public sealed partial class MainWindow
         else if (!string.IsNullOrWhiteSpace(input)) credentials.Save(target, input);
     }
 
+    private async Task<string> RefreshAccountMemoryAsync(DesktopAccountProfile profile, bool? enabled = null)
+    {
+        try
+        {
+            await new AccountMemorySync(store).SyncAsync(profile, CancellationToken.None, enabled);
+            return WorkText("账号记忆已同步。","Account memory is up to date.");
+        }
+        catch (HttpRequestException e) when (e.StatusCode == System.Net.HttpStatusCode.Unauthorized)
+        {
+            return WorkText("请在账号菜单中刷新网站连接。本机的修改已保留。","Refresh the website connection in your account menu. Your local changes are saved.");
+        }
+        catch (Exception e) when (e is IOException or HttpRequestException or OperationCanceledException or Microsoft.Data.Sqlite.SqliteException or System.Text.Json.JsonException)
+        {
+            return WorkText("暂时无法同步。本机的修改已保留，联网后会重试。","Working from this PC. Saved changes will sync when the connection returns.");
+        }
+    }
+
     private async Task ShowMemoryAsync()
     {
+        var profile = accountProfile;
+        string? owner = profile?.CacheOwner;
+        string L(string zh,string en) => WorkText(zh,en);
         var body = new StackPanel { Spacing = 8 };
-        body.Children.Add(Label(T("Star Hub recalls related notes and saves notes you explicitly ask it to remember.")));
+        body.Children.Add(Label(profile is null ? T("Star Hub recalls related notes and saves notes you explicitly ask it to remember.")
+            : profile.MemoryToken is null ? L("请在账号菜单中刷新网站连接，以启用记忆同步。","Refresh the website connection in your account menu to sync memory.")
+            : L("与此账号的网页版共享记忆。对话、文件和设备读数保存在本机。","Memory is shared with this account on the web. Chats, files and device readings stay on this PC.")));
+        var toggle = new Button();
+        if (profile?.MemoryToken is not null) body.Children.Add(toggle);
         var search = Field(T("Find a memory"), "", 240);
         var list = new ListView { Height = 168, DisplayMemberPath = nameof(MemoryNote.Text) };
-        var entry = Field(T("Memory"), "", 1000, multiline: true);
+        var entry = Field(L("记忆内容","Note"), "", owner is null ? 1000 : 120, multiline: true);
         var feedback = Label("");
+        var conflicts = Label("");
+        var discard = new Button { Content=L("采用网站上的版本","Use website version") };
         var actions = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 8 };
         var add = new Button { Content = T("Add") };
         var update = new Button { Content = T("Update selected") };
         var remove = new Button { Content = T("Delete") };
         foreach (var button in new[] { add, update, remove }) actions.Children.Add(button);
-        foreach (var element in new UIElement[] { search, list, entry, actions, feedback }) body.Children.Add(element);
+        foreach (var element in new UIElement[] { search, list, entry, actions, feedback, conflicts, discard }) body.Children.Add(element);
 
         void Refresh()
         {
-            list.ItemsSource = store.Memories(search.Text);
-            update.IsEnabled = remove.IsEnabled = list.SelectedItem is not null;
+            var state = owner is null ? null : store.AccountNotes(owner);
+            list.ItemsSource = state is null ? store.Memories(search.Text) : state.Notes(search.Text);
+            add.IsEnabled = owner is null || state!.Enabled;
+            update.IsEnabled = add.IsEnabled && list.SelectedItem is not null;
+            remove.IsEnabled = list.SelectedItem is not null;
+            toggle.Content = state?.Enabled == true ? L("关闭账号记忆","Turn off account memory") : L("开启账号记忆","Turn on account memory");
+            var drafts = state?.Pending.Where(e => e.Conflict).ToArray() ?? [];
+            discard.Visibility = conflicts.Visibility = drafts.Length > 0 ? Visibility.Visible : Visibility.Collapsed;
+            conflicts.Text = L("这些修改需要核对。可以编辑草稿，或采用网站版本。","Review these changes. Edit the draft or use the website version.") +
+                "\n" + string.Join("\n", drafts.Select(e => e.After ?? e.Before));
+        }
+        bool closed=false;
+        async Task Sync(bool? value=null)
+        {
+            if (profile?.MemoryToken is null) return;
+            toggle.IsEnabled=false;
+            string message=await RefreshAccountMemoryAsync(profile,value);
+            if (closed) return;
+            feedback.Text=message;
+            Refresh();
+            toggle.IsEnabled=true;
         }
         void Change(Action action)
         {
@@ -182,22 +227,35 @@ public sealed partial class MainWindow
                 action();
                 entry.Text = "";
                 Refresh();
-                feedback.Text = "Saved locally.";
+                feedback.Text = L("已保存在本机。","Saved on this PC.");
+                _ = Sync();
             }
             catch (Exception problem) { feedback.Text = DialogError(problem); }
+        }
+        void Save(string? id)
+        {
+            if (owner is null) store.SaveMemory(entry.Text,id);
+            else store.ChangeAccountNote(owner,id ?? Guid.NewGuid().ToString(),entry.Text);
         }
         search.TextChanged += (_, _) => Refresh();
         list.SelectionChanged += (_, _) =>
         {
             var note = list.SelectedItem as MemoryNote;
-            update.IsEnabled = remove.IsEnabled = note is not null;
+            update.IsEnabled = add.IsEnabled && note is not null;
+            remove.IsEnabled = note is not null;
             if (note is not null) entry.Text = note.Text;
         };
-        add.Click += (_, _) => Change(() => store.SaveMemory(entry.Text));
-        update.Click += (_, _) => { if (list.SelectedItem is MemoryNote note) Change(() => store.SaveMemory(entry.Text, note.Id)); };
-        remove.Click += (_, _) => { if (list.SelectedItem is MemoryNote note) Change(() => store.RemoveMemory(note.Id)); };
+        toggle.Click += async (_,_) => await Sync(!store.AccountNotes(owner!).Enabled);
+        discard.Click += (_,_) => Change(() => store.DiscardConflicts(owner!));
+        add.Click += (_, _) => Change(() => Save(null));
+        update.Click += (_, _) => { if (list.SelectedItem is MemoryNote note) Change(() => Save(note.Id)); };
+        remove.Click += (_, _) => { if (list.SelectedItem is MemoryNote note) Change(() => {
+            if (owner is null) store.RemoveMemory(note.Id); else store.ChangeAccountNote(owner,note.Id,null);
+        }); };
         Refresh();
-        await Dialog(T("Local memory"), Scroller(body)).ShowAsync();
+        _ = Sync();
+        try { await Dialog(L("长期记忆","Long-term memory"), Scroller(body)).ShowAsync(); }
+        finally { closed=true; }
     }
 
     private async Task ShowTasksAsync()

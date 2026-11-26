@@ -13,6 +13,8 @@
   <servlet-mapping><servlet-name>account</servlet-name><url-pattern>/api/account</url-pattern></servlet-mapping>
   <servlet><servlet-name>desktopConnection</servlet-name><servlet-class>com.starhub.DesktopConnectionServlet</servlet-class></servlet>
   <servlet-mapping><servlet-name>desktopConnection</servlet-name><url-pattern>/api/desktop-connection</url-pattern></servlet-mapping>
+  <servlet><servlet-name>desktopDiagnostics</servlet-name><servlet-class>com.starhub.DesktopDiagnosticsServlet</servlet-class></servlet>
+  <servlet-mapping><servlet-name>desktopDiagnostics</servlet-name><url-pattern>/api/desktop-diagnostics</url-pattern></servlet-mapping>
   <servlet><servlet-name>guestSession</servlet-name><servlet-class>com.starhub.GuestSessionServlet</servlet-class></servlet>
   <servlet-mapping><servlet-name>guestSession</servlet-name><url-pattern>/api/guest-session</url-pattern></servlet-mapping>
   <servlet><servlet-name>api</servlet-name><servlet-class>com.starhub.ApiServlet</servlet-class><load-on-startup>1</load-on-startup></servlet>

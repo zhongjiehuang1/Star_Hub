@@ -28,15 +28,25 @@ body {
   font: 16px/1.65 "Segoe UI", system-ui, sans-serif;
 }
 a { color: var(--accent); text-underline-offset: .22em; }
-a:focus-visible { outline: 2px solid var(--accent); outline-offset: 4px; }
+a:focus-visible, button:focus-visible { outline: 2px solid var(--accent); outline-offset: 4px; }
 header, main { max-width: 800px; margin: auto; padding-inline: clamp(22px, 6vw, 44px); }
 header { display: flex; align-items: center; justify-content: space-between; padding-block: 20px; }
 .brand { display: inline-flex; align-items: center; gap: 11px; text-decoration: none; color: var(--ink); font-weight: 650; }
+#download-language {
+  border: 1px solid var(--rule);
+  background: var(--surface);
+  color: var(--ink);
+  border-radius: 18px;
+  padding: 7px 14px;
+  min-height: 44px;
+  font: inherit;
+  cursor: pointer;
+}
 main { padding-top: clamp(24px, 7vw, 72px); }
 section { padding-bottom: 44px; }
-section + section { border-top: 1px solid var(--rule); padding-top: 40px; }
-h1, .translated-title { font-size: clamp(2rem, 5vw, 3.15rem); line-height: 1.15; margin: 0 0 12px; letter-spacing: -.035em; }
-h2, h3 { margin: 24px 0 8px; font-size: 1.18rem; }
+section + section { border-top: 1px solid var(--rule); padding-top: 4px; }
+h1 { font-size: clamp(2rem, 5vw, 3.15rem); line-height: 1.15; margin: 0 0 12px; letter-spacing: -.035em; }
+h2 { margin: 24px 0 8px; font-size: 1.18rem; }
 .requirements, .notice { color: var(--muted); }
 .download {
   display: inline-block;

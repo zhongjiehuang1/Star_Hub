@@ -78,7 +78,8 @@ public enum TurnState { Running, Completed, Partial, Cancelled, Failed, Interrup
 
 public sealed record Turn(string Id, string Prompt, string Reply, string Model, TurnState State,
     string Detail, IReadOnlyList<Source> Sources, int? OutputTokens, string? FileName,
-    IReadOnlyList<ProjectReference>? ProjectSources = null, bool LocalOnly = false, string? GeneratedPdf = null);
+    IReadOnlyList<ProjectReference>? ProjectSources = null, bool LocalOnly = false, string? GeneratedPdf = null,
+    WorkReceipt? LocalWork = null);
 
 public sealed record Attachment(string Name, string MediaType, byte[] Bytes)
 {

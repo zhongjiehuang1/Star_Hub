@@ -25,6 +25,18 @@ public static class PdfRequests
     private static readonly Regex End = new(@"^(?:取消|算了|不用了|换个话题|cancel|never mind)[.!?。！？\s]*$", Text);
     private static readonly Regex Han = new(@"[\u3400-\u9fff]", Text);
     private static readonly Regex SaveLocation = new(@"保存(?:到|在|为)|存(?:到|在|为)|放(?:到|在)|输出到|写到|\b(?:save|put|export|write)(?:\s+it)?\s+(?:to|in|as)\s+", Text);
+    private const string RecentPdf = @"(?:(?:刚才|刚刚|刚生成|上次)(?:生成|保存|制作)?的?\s*(?:这[个份]|那[个份])?|这[个份]|那[个份])\s*PDF(?:\s*文件)?";
+    private const string RecycleVerb = @"(?:删除|删掉|删了|删掉吧|移(?:到|入)回收站)";
+    private static readonly Regex RecycleRequest = new(
+        @"^(?:请|帮我|请你|麻烦你|能不能|能否|可以|\s)*(?:(?:把|将)?\s*" + RecentPdf + @"\s*" + RecycleVerb +
+        @"|(?:删除|删掉|删了)\s*" + RecentPdf + @")(?:吧|吗|一下|\s|[。！？?!.])*$|" +
+        @"^(?:(?:please|can you|could you)\s+)*(?:(?:delete|recycle|remove)\s+(?:this|that|the (?:last|previous|most recent))\s+pdf|" +
+        @"(?:move|send)\s+(?:this|that|the (?:last|previous|most recent))\s+pdf\s+to\s+the recycle bin)[.!?\s]*$", Text);
+
+    public static bool IsRecycleRequest(string prompt) => RecycleRequest.IsMatch(prompt.Trim());
+
+    public static string? LatestSavedPath(IReadOnlyList<Turn> history) =>
+        history.LastOrDefault(turn => turn.GeneratedPdf is not null)?.GeneratedPdf;
 
     public static bool Explicit(string prompt) => Format.IsMatch(prompt) &&
         (Action.IsMatch(prompt) || prompt.Trim().Equals("PDF", StringComparison.OrdinalIgnoreCase)) && !Tutorial.IsMatch(prompt);
@@ -32,7 +44,7 @@ public static class PdfRequests
     public static PdfRequest? Parse(string prompt, IReadOnlyList<Turn> history, bool hasAttachment = false)
     {
         prompt = prompt.Trim();
-        if (prompt.Length == 0 || End.IsMatch(prompt) || Tutorial.IsMatch(prompt)) return null;
+        if (prompt.Length == 0 || End.IsMatch(prompt) || Tutorial.IsMatch(prompt) || IsRecycleRequest(prompt)) return null;
         bool direct = Explicit(prompt);
         var location = SaveLocation.Match(prompt);
         string? outputPath = location.Success ? PcDirect.TargetPath(prompt[(location.Index + location.Length)..]) : null;
@@ -49,7 +61,7 @@ public static class PdfRequests
         bool chinese = Han.IsMatch(prompt) || (anchor is not null && Han.IsMatch(anchor.Prompt));
         var destination = FindDestination(prompt) ?? (anchor is null ? null : FindDestination(anchor.Prompt)) ?? PdfDestination.Desktop;
         bool reference = ExistingContent.IsMatch(prompt);
-        string? previous = history.LastOrDefault(turn => turn.GeneratedPdf is not null)?.GeneratedPdf;
+        string? previous = LatestSavedPath(history);
         if (!hasAttachment && previous is not null && !reference && (followUp || BareRequest.IsMatch(prompt)) &&
             !AnyExample.IsMatch(prompt))
             return new(prompt, destination, chinese, PreviousFile: previous, OutputPath: outputPath);

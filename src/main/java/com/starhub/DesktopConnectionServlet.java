@@ -27,19 +27,32 @@ public final class DesktopConnectionServlet extends HttpServlet {
         ObjectNode profile;
         try {
             var config = AccountServlet.config();
-            var grant = DesktopConnection.decode(config, input.path("code").asText(), input.path("verifier").asText(), Instant.now());
+            String authorization = request.getHeader("Authorization");
+            boolean memory = authorization != null;
+            JsonNode grant = memory ? DesktopMemory.decode(config, authorization, Instant.now())
+                    : DesktopConnection.decode(config, input.path("code").asText(), input.path("verifier").asText(), Instant.now());
             if (grant == null) { error(response, 401, "CONNECTION_EXPIRED"); return; }
             var storage = FileStorage.get();
             storage.ensureReady();
+            AtomicDatabase.Work<ObjectNode> work = conn -> {
+                if (!memory) return DesktopConnection.redeem(conn, config, grant);
+                if (storage.atomic != null && !"read".equals(input.path("action").asText()))
+                    storage.atomic.transientCapacity(conn, WorkspaceMutationBudget.MEMORY_BYTES);
+                return DesktopMemory.apply(conn, config, grant, input);
+            };
             if (storage.replicated && storage.atomic != null) {
-                profile = storage.atomic.database.run(UUID.randomUUID().toString(), conn ->
-                    DesktopConnection.redeem(conn, config, grant));
+                profile = storage.atomic.database.run(UUID.randomUUID().toString(), work);
             } else {
                 try (var connection = AccountServlet.db(config)) {
-                    profile = DesktopConnection.redeem(connection, config, grant);
+                    connection.setAutoCommit(false);
+                    profile = work.run(connection);
+                    connection.commit();
                 }
                 storage.ensureReady();
             }
+        } catch (StorageFailure failure) {
+            error(response, failure.status, failure.code);
+            return;
         } catch (Exception unavailable) {
             error(response, 503, "CLUSTER_UNAVAILABLE");
             return;

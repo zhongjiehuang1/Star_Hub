@@ -101,16 +101,20 @@
                         <StackPanel x:Name="MessageLog" Spacing="28" />
                     </Grid>
                 </ScrollViewer>
-                <Grid x:Name="Welcome" Grid.Row="1" Margin="16,0" RowDefinitions="*,Auto,*" IsHitTestVisible="False">
+                <Grid x:Name="Welcome" Grid.Row="1" Margin="16,0" RowDefinitions="*,Auto,*">
                     <TextBlock Text="✳" Foreground="{ThemeResource BrandBrush}" FontSize="40" HorizontalAlignment="Center"
                                VerticalAlignment="Bottom" Margin="0,0,0,8" FontFamily="Segoe UI Symbol"
                                AutomationProperties.AccessibilityView="Raw" />
                     <TextBlock x:Name="StartAConversation" Grid.Row="1" AutomationProperties.AutomationId="WelcomeHeading"
                                Text="What would you like to do?" TextWrapping="Wrap" TextAlignment="Center"
                                Style="{StaticResource TitleTextBlockStyle}" />
-                    <TextBlock x:Name="AskAQuestionOrAddAFile" Grid.Row="2" Margin="0,8,0,0" VerticalAlignment="Top"
+                    <StackPanel Grid.Row="2" Margin="0,8,0,0" Spacing="8" VerticalAlignment="Top" HorizontalAlignment="Center">
+                    <TextBlock x:Name="AskAQuestionOrAddAFile"
                                Text="Type or speak. Try “open Notepad”." TextWrapping="Wrap" TextAlignment="Center"
                                Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                    <Button x:Name="ResumeLearning" Visibility="Collapsed" HorizontalAlignment="Center" AutomationProperties.AutomationId="ResumeLearning"
+                            Click="ResumeLearningClicked" CornerRadius="12" />
+                    </StackPanel>
                 </Grid>
                 <Grid x:Name="ComposerArea" Grid.Row="2" Padding="20,8,20,18">
                     <StackPanel MaxWidth="780" HorizontalAlignment="Stretch" Spacing="8">

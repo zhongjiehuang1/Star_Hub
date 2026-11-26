@@ -8,13 +8,14 @@ import java.sql.*;
  * FULL row images include both the old and new conversation values. */
 final class WorkspaceMutationBudget {
     static final long MAX_CHAT_UTF8_BYTES=3_000_000L,MAX_TITLE_UTF8_BYTES=800L;
+    static final long MEMORY_BYTES=AtomicHttp.MAX_MUTATION_RECEIPT_ROW_BYTES+16384L;
     static long estimate(Connection c,long user,String endpoint,JsonNode input)throws Exception {
         long bytes=AtomicHttp.MAX_MUTATION_RECEIPT_ROW_BYTES;
         if(!endpoint.equals("/api/workspace"))return bytes;
         String action=input.path("action").asText();
         // Bounded memory records contain at most 2 KiB of ciphertext; a write
         // modifies at most one settings row and one record (old and new images).
-        if(java.util.Set.of("setMemoryEnabled","deleteMemory","editMemory","saveLocalMemory","saveSemanticMemory").contains(action))return Math.addExact(bytes,16384);
+        if(java.util.Set.of("setMemoryEnabled","deleteMemory","editMemory","saveLocalMemory","saveSemanticMemory").contains(action))return MEMORY_BYTES;
         // Bound full old/new row images and indexes for the small folder mutations.
         if(java.util.Set.of("createFolder","renameFolder","deleteFolder","moveFile").contains(action))return Math.addExact(bytes,8192);
         if(!action.equals("saveChat")&&!action.equals("deleteChat"))return bytes;

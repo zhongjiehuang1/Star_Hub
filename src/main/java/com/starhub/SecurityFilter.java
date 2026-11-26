@@ -28,7 +28,7 @@ public final class SecurityFilter implements Filter {
             chain.doFilter(request,response);return;
         }
         // Redemption needs a proof from the admitted, signed-in browser session. Native requests have no browser cookie.
-        if("POST".equals(req.getMethod())&&DesktopConnection.PATH.equals(endpoint)){
+        if("POST".equals(req.getMethod())&&(DesktopConnection.PATH.equals(endpoint)||DesktopDiagnosticsServlet.PATH.equals(endpoint))){
             chain.doFilter(request,response);return;
         }
         if ("/access.css".equals(req.getServletPath()) || RegionAccess.allowed(GeoCountry.forRequest(req), req.getSession(false))) {

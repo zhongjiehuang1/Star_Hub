@@ -538,9 +538,10 @@ public sealed class DesktopTests : IDisposable
         var store = Store;
         using var local = new Stub((request, body) =>
         {
+            if (request.RequestUri!.AbsolutePath=="/api/tags") return Reply("application/json", """{"models":[{"name":"local-test"}]}""");
             Assert.Equal("http://127.0.0.1:11434/api/chat", request.RequestUri!.AbsoluteUri);
             Assert.Null(request.Headers.Authorization);
-            Assert.Contains("remember that I prefer local replies", body);
+            Assert.Contains("What is a journal entry?", body);
             return Reply("application/x-ndjson", """
                 {"message":{"content":"Saved"},"done":false}
                 {"message":{"content":"."},"done":true,"eval_count":2}
@@ -550,10 +551,27 @@ public sealed class DesktopTests : IDisposable
         using var client = new ProviderClient(remote, local);
         var engine = new ChatEngine(store, new FakeCredentials(), client);
         var settings = new Preferences { OllamaModel = "local-test", UseMemory = true };
-        var turn = await engine.SendAsync("chat", "remember that I prefer local replies", null, settings,
+        var turn = await engine.SendAsync("chat", "What is a journal entry?", null, settings,
             new ChatOptions(Provider.Automatic), _ => { }, _ => { }, default);
         Assert.Equal("Saved.", turn.Reply);
+        await engine.SendAsync("chat","remember that I prefer local replies",null,settings,
+            new ChatOptions(Provider.Automatic),_ => { },_ => { },default);
         Assert.Equal("I prefer local replies", Assert.Single(Store.Memories()).Text);
+    }
+
+    [Fact]
+    public async Task AutomaticRoutingSkipsAnOldOllamaModelWhenQwenIsRunning()
+    {
+        using var local = new Stub((request, _) => request.RequestUri!.AbsolutePath=="/api/tags"
+            ? Reply("application/json", """{"models":[]}""")
+            : Reply("application/json", """{"data":[{"id":"qwen2.5-0.5b-instruct"}]}"""));
+        using var remote = new Stub((_,_)=>throw new InvalidOperationException("Unexpected remote discovery."));
+        using var provider = new ProviderClient(remote,local);
+        var engine = new ChatEngine(Store,new FakeCredentials(),provider);
+        var settings = new Preferences { OllamaModel="removed-model" };
+        var route = await engine.ResolveAsync(settings,new(Provider.Automatic),"Hello",null,default);
+        Assert.Equal("qwen2.5-0.5b-instruct",route.Model);
+        Assert.Equal("127.0.0.1",route.Endpoint.Host);
     }
 
     [Fact]
@@ -721,7 +739,7 @@ public sealed class DesktopTests : IDisposable
     private sealed class Stub(Func<HttpRequestMessage, string, HttpResponseMessage> reply) : HttpMessageHandler
     {
         protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken token) =>
-            reply(request, await request.Content!.ReadAsStringAsync(token));
+            reply(request, request.Content is null ? "" : await request.Content.ReadAsStringAsync(token));
     }
 
     private sealed class FakeCredentials : StarHub.Core.ICredentials

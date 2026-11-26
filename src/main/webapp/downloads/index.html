@@ -7,44 +7,44 @@
   <title>Download Star Hub</title>
   <link rel="icon" href="../icon.svg" type="image/svg+xml">
   <link rel="stylesheet" href="download.css">
+  <script src="download.js" defer></script>
 </head>
 <body>
   <header>
     <a class="brand" href="../"><img src="../icon.svg" width="30" height="30" alt="">Star Hub</a>
-    <a href="#zh" lang="zh-CN">中文</a>
+    <button id="download-language" type="button" lang="zh-CN" hidden>中文</button>
   </header>
   <main>
     <section aria-labelledby="title">
-      <h1 id="title">Star Hub for Windows</h1>
-      <p class="requirements">First preview · Windows 10 22H2 or Windows 11 · x64</p>
-      <p>Talk in real time, ask questions about project documents, and run MCP tools from a native Windows app. Star Hub stores your conversations and task history on this PC.</p>
-      <a class="download" href="windows/preview/StarHub-Windows-x64-Setup.exe" download>Download for Windows</a>
+      <h1 id="title" data-text="title">Star Hub for Windows</h1>
+      <p class="requirements" data-text="requirements">Windows only · Windows 10 22H2 or Windows 11 · x64</p>
+      <p class="requirements" id="download-build" hidden></p>
+      <p data-text="description">Use your voice or keyboard to work with files, run tasks, and learn with your own materials. Star Hub saves desktop conversations and task history on this PC.</p>
+      <a class="download" href="windows/preview/StarHub-Windows-x64-Setup.exe" download data-text="download">Download for Windows</a>
       <div class="links">
-        <a href="windows/preview/StarHub-Windows-x64-Setup.exe.sha256">SHA-256 checksum</a>
+        <a href="windows/preview/StarHub-Windows-x64-Setup.exe.sha256" data-text="checksum">Installer SHA-256</a>
       </div>
-      <h2>Install Star Hub</h2>
+      <h2 data-text="install">Install Star Hub</h2>
       <ol>
-        <li>Open the downloaded setup file on a 64-bit PC running Windows 10 version 22H2 (build 19045) or Windows 11. Setup includes the required runtimes and opens Star Hub when it finishes.</li>
-        <li>In Settings, add your OpenAI key, choose an installed Ollama model or connect a compatible API.</li>
+        <li data-text="stepOpen">Run the setup on Windows 10 22H2 (build 19045) or Windows 11. Setup includes the required runtimes and opens Star Hub when it finishes.</li>
+        <li data-text="stepAccount">Sign in to use your saved OpenAI connection. Turn on Long-term memory to share notes with the web.</li>
+        <li data-text="stepLesson">To try a workbook lesson, say “teach me manufacturing costing” with Operate this PC enabled, or choose Learn with this workbook on a cost workbook you created.</li>
       </ol>
-      <p>Updating an existing installation? Finish active tasks, close Star Hub and run the new setup. Your local data is kept.</p>
-      <p class="notice">The installer is unsigned. Windows SmartScreen may show a publisher warning. Verify the download against the published SHA-256 checksum.</p>
+      <p data-text="update">To update, finish active tasks, close Star Hub, and run the new setup. Your local data is kept. If already signed in, select your name and choose Refresh from website once to connect account memory.</p>
+      <details>
+        <summary data-text="offline">Use Qwen for offline chat</summary>
+        <p><a href="https://ollama.com/download/windows" data-text="ollama">Install Ollama for Windows</a>. <span data-text="pull">While online, run this command once in PowerShell. Keep Ollama running and leave Star Hub’s model set to Automatic.</span></p>
+        <code>ollama pull qwen2.5:0.5b</code>
+      </details>
+      <p class="notice" data-text="notice">The installer is unsigned. Windows SmartScreen may show a publisher warning. Verify the file against the published SHA-256 checksum.</p>
     </section>
-    <section lang="zh-CN" id="zh" aria-labelledby="title-zh">
-      <h2 class="translated-title" id="title-zh">下载 Star Hub Windows 版</h2>
-      <p class="requirements">首版预览 · Windows 10 22H2 或 Windows 11 · x64</p>
-      <p>在 Windows 原生应用中实时语音对话、查询项目资料和调用 MCP 工具。对话与任务记录保存在本机。</p>
-      <a class="download" href="windows/preview/StarHub-Windows-x64-Setup.exe" download>下载 Windows 安装程序</a>
+    <section class="source" aria-labelledby="source-title">
+      <h2 id="source-title" data-text="sourceTitle">Windows desktop source code</h2>
+      <p data-text="sourceHelp">This ZIP builds the Windows desktop application. Its target is Windows x64 only. Use the installer above to run Star Hub.</p>
       <div class="links">
-        <a href="windows/preview/StarHub-Windows-x64-Setup.exe.sha256">SHA-256 校验值</a>
+        <a href="windows/preview/StarHub-Windows-Source.zip" download data-text="sourceZip">Download source ZIP</a>
+        <a href="windows/preview/StarHub-Windows-Source.zip.sha256" data-text="sourceChecksum">Source SHA-256</a>
       </div>
-      <h3>安装步骤</h3>
-      <ol>
-        <li>在运行 Windows 10 22H2（内部版本 19045）或 Windows 11 的 x64 电脑上打开安装程序。所需运行组件已打包，安装完成后会启动 Star Hub。</li>
-        <li>在 Settings 中填入 OpenAI API 密钥、选择本机已安装的 Ollama 模型，或接入兼容 API。</li>
-      </ol>
-      <p>已安装 Star Hub？完成正在运行的任务并关闭 Star Hub，然后运行新下载的安装程序。本机数据会保留。</p>
-      <p class="notice">安装程序未经代码签名，Windows SmartScreen 可能显示发布者提示。请使用公开的 SHA-256 校验值核对下载文件。</p>
     </section>
   </main>
 </body>

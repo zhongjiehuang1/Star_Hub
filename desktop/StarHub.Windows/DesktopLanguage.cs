@@ -16,7 +16,7 @@ public sealed partial class MainWindow
         HistoryFilter.PlaceholderText = T("Find a conversation");
         AutomationProperties.SetName(HistoryFilter, T("Find a conversation"));
         AutomationProperties.SetName(History, T("Conversations"));
-        LocalMemory.Text = T("Local memory");
+        LocalMemory.Text = WorkText("长期记忆","Long-term memory");
         ScheduledTasks.Text = T("Scheduled tasks");
         Settings.Text = T("Settings");
         UpdateAccountLabel();
@@ -55,6 +55,15 @@ public sealed partial class MainWindow
         ["Local memory"] = "长期记忆",
         ["Scheduled tasks"] = "定时任务",
         ["Settings"] = "设置",
+        ["This connection sends operation results to the Star Hub server for troubleshooting."] = "此连接会将操作结果发送到 Star Hub 服务器，便于排查问题。",
+        ["Moved the PDF to the Recycle Bin."] = "已将 PDF 移到回收站。",
+        ["The saved file path is not a local PDF."] = "保存的路径未指向本机 PDF。",
+        ["The saved path no longer refers to a regular PDF."] = "保存的路径已不再对应普通 PDF 文件。",
+        ["The PDF is already gone from its saved location."] = "原来的保存位置已经找不到这份 PDF。",
+        ["Windows denied access to this PDF."] = "Windows 拒绝访问这份 PDF。",
+        ["Windows did not confirm that the PDF reached the Recycle Bin."] = "Windows 未确认这份 PDF 已进入回收站。",
+        ["This conversation has no saved PDF to move to the Recycle Bin."] = "这段对话中没有可移到回收站的已保存 PDF。",
+        ["This PDF is no longer at its saved location."] = "这份 PDF 已离开原来的保存位置。",
         ["Search the web"] = "联网搜索",
         ["Operate this PC"] = "操作电脑",
         ["Tell this PC what to do"] = "告诉电脑要做什么",

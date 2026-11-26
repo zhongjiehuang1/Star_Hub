@@ -25,8 +25,8 @@ public sealed partial class LocalStore
         using var transaction = connection.BeginTransaction(deferred: false);
         using var schemaVersion = Command(connection, "PRAGMA user_version", transaction);
         long version = (long)schemaVersion.ExecuteScalar()!;
-        if (version is < 0 or > 5) throw new StarHubException("This data folder needs a newer version of Star Hub.");
-        if (version == 5)
+        if (version is < 0 or > 8) throw new StarHubException("This data folder needs a newer version of Star Hub.");
+        if (version == 8)
         {
             transaction.Commit();
             return;
@@ -79,8 +79,20 @@ public sealed partial class LocalStore
             using var alerts = Command(connection, DeviceAlertSchema, transaction);
             alerts.ExecuteNonQuery();
         }
-        using var generatedPdf = Command(connection, "ALTER TABLE turns ADD COLUMN generated_pdf TEXT; PRAGMA user_version = 5;", transaction);
-        generatedPdf.ExecuteNonQuery();
+        if (version < 5)
+        {
+            using var generatedPdf = Command(connection, "ALTER TABLE turns ADD COLUMN generated_pdf TEXT;", transaction);
+            generatedPdf.ExecuteNonQuery();
+        }
+        using var work = Command(connection, LocalWorkSchema, transaction);
+        work.ExecuteNonQuery();
+        using var learning = Command(connection, LearningSchema, transaction);
+        learning.ExecuteNonQuery();
+        using var memories = Command(connection, """
+            CREATE TABLE IF NOT EXISTS account_memory(owner TEXT PRIMARY KEY, content TEXT NOT NULL);
+            PRAGMA user_version=8;
+            """, transaction);
+        memories.ExecuteNonQuery();
         transaction.Commit();
     }
 
@@ -151,8 +163,9 @@ public sealed partial class LocalStore
     {
         using var connection = Open();
         using var command = Command(connection, """
-            SELECT id, prompt, reply, model, state, detail, sources, output_tokens, file_name, project_refs, local_only, generated_pdf
-            FROM turns WHERE conversation_id = $id ORDER BY created DESC, rowid DESC LIMIT $limit
+            SELECT t.id, prompt, reply, model, state, detail, sources, output_tokens, file_name, project_refs, local_only, generated_pdf, work.receipt
+            FROM turns t LEFT JOIN local_work work ON work.turn_id = t.id
+            WHERE conversation_id = $id ORDER BY t.created DESC, t.rowid DESC LIMIT $limit
             """, values: [("$id", conversationId), ("$limit", maxRecent ?? -1)]);
         using var rows = command.ExecuteReader();
         var turns = new List<Turn>();
@@ -162,7 +175,8 @@ public sealed partial class LocalStore
                 (TurnState)rows.GetInt32(4), rows.GetString(5), ReadSources(rows.GetString(6)),
                 rows.IsDBNull(7) ? null : rows.GetInt32(7), rows.IsDBNull(8) ? null : rows.GetString(8),
                 JsonSerializer.Deserialize<ProjectReference[]>(rows.GetString(9)) ?? [], rows.GetBoolean(10),
-                rows.IsDBNull(11) ? null : rows.GetString(11)));
+                rows.IsDBNull(11) ? null : rows.GetString(11),
+                rows.IsDBNull(12) ? null : JsonSerializer.Deserialize<WorkReceipt>(rows.GetString(12))));
         }
         turns.Reverse();
         return turns;
@@ -222,9 +236,9 @@ public sealed partial class LocalStore
     {
         using var connection = Open();
         using var command = Command(connection, """
-            UPDATE turns SET reply = $reply, state = $state, detail = $detail, sources = $sources,
+            UPDATE turns SET model = $model, reply = $reply, state = $state, detail = $detail, sources = $sources,
                 output_tokens = $tokens, project_refs = $projectRefs, generated_pdf = $pdf WHERE id = $id AND state = $running
-            """, values: [("$reply", turn.Reply), ("$state", (int)turn.State), ("$detail", turn.Detail),
+            """, values: [("$model", turn.Model), ("$reply", turn.Reply), ("$state", (int)turn.State), ("$detail", turn.Detail),
                 ("$sources", JsonSerializer.Serialize(turn.Sources)), ("$tokens", turn.OutputTokens),
                 ("$projectRefs", JsonSerializer.Serialize(turn.ProjectSources ?? [])),
                 ("$pdf", turn.GeneratedPdf),

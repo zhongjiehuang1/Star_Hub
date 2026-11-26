@@ -20,7 +20,8 @@ public sealed partial class MainWindow
 {
     private static readonly string[] ImageExtensions = [".png", ".jpg", ".jpeg", ".webp"];
     private MediaPlayer? speechPlayer;
-    private SpeechSynthesisStream? speechStream;
+    private IRandomAccessStream? speechStream;
+    private long speechRevision;
     private VoiceRecording? voiceRecording;
     private bool voiceTransition;
     private bool VoiceBusy => voiceTransition || voiceRecording is not null;
@@ -418,18 +419,41 @@ public sealed partial class MainWindow
         Say(T("Transcript added to your draft."));
     }
 
-    private async Task SpeakAsync(string text)
+    private Task SpeakAsync(string text) => ReadSpeechAsync(text, lesson: false, CancellationToken.None);
+
+    private Task ReadLessonAloudAsync(string text, CancellationToken token) => ReadSpeechAsync(text, lesson: true, token);
+
+    private async Task ReadSpeechAsync(string text, bool lesson, CancellationToken token)
     {
         StopReading();
+        long revision = speechRevision;
         using var synthesizer = new SpeechSynthesizer();
-        if (text.Take(1200).Count(c => c is >= '\u4e00' and <= '\u9fff') >= 12
-            && SpeechSynthesizer.AllVoices.FirstOrDefault(voice => voice.Language.StartsWith("zh", StringComparison.OrdinalIgnoreCase)) is { } chinese)
-            synthesizer.Voice = chinese;
-        speechStream = await synthesizer.SynthesizeTextToStreamAsync(text[..Math.Min(text.Length, 8000)]);
+        bool mandarin = text.Take(1200).Count(c => c is >= '\u4e00' and <= '\u9fff') >= (lesson ? 2 : 12);
+        var voice = mandarin ? SpeechSynthesizer.AllVoices.FirstOrDefault(v =>
+            v.Language.StartsWith("zh", StringComparison.OrdinalIgnoreCase)) : null;
+        IRandomAccessStream stream;
+        string mime;
+        bool cloud = lesson && mandarin && voice is null;
+        if (cloud)
+        {
+            byte[] audio = await providerClient.SpeakMandarinAsync(MediaKey(), text, token);
+            stream = new MemoryStream(audio, writable: false).AsRandomAccessStream();
+            mime = "audio/mpeg";
+        }
+        else
+        {
+            if (voice is not null) synthesizer.Voice = voice;
+            var native = await synthesizer.SynthesizeTextToStreamAsync(text[..Math.Min(text.Length, 8000)]);
+            stream = native;
+            mime = native.ContentType;
+        }
+        if (revision != speechRevision || token.IsCancellationRequested) { stream.Dispose(); return; }
+        speechStream = stream;
         speechPlayer ??= new MediaPlayer();
-        speechPlayer.Source = global::Windows.Media.Core.MediaSource.CreateFromStream(speechStream, speechStream.ContentType);
+        speechPlayer.Source = global::Windows.Media.Core.MediaSource.CreateFromStream(stream, mime);
         speechPlayer.Play();
-        Say(text.Length > 8000 ? "Reading the first 8,000 characters using a Windows voice." : "Reading aloud using a Windows voice.");
+        Say(cloud ? WorkText("正在使用 OpenAI 合成语音朗读。", "Reading with an AI-generated OpenAI voice.")
+            : T("Reading aloud using a Windows voice."));
     }
 
     private void StopReadingClicked(object sender, RoutedEventArgs args) => Try(() =>
@@ -440,6 +464,7 @@ public sealed partial class MainWindow
 
     private void StopReading()
     {
+        speechRevision++;
         if (speechPlayer is not null)
         {
             speechPlayer.Pause();

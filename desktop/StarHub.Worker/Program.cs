@@ -33,6 +33,7 @@ try
     store.MarkInterruptedTasks();
     WindowsHost.Log("worker.log", "Started.");
     var active = new List<Task>();
+    var memories = SyncAccountAsync(store, account, shutdown.Token);
     var device = Task.Run(() => CollectDeviceAsync(store, shutdown.Token));
     try
     {
@@ -58,7 +59,7 @@ try
     {
         shutdown.Cancel();
         wait.Unregister(null);
-        await Task.WhenAll(active.Append(device));
+        await Task.WhenAll(active.Append(device).Append(memories));
         WindowsHost.Log("worker.log", "Stopped.");
     }
 
@@ -68,6 +69,28 @@ catch (Exception error)
 {
     WindowsHost.Log("worker.log", $"Worker stopped with {error.GetType().Name} (0x{error.HResult:X8}).");
     return 1;
+}
+
+static async Task SyncAccountAsync(LocalStore store, DesktopAccountStore account, CancellationToken token)
+{
+    var sync = new AccountMemorySync(store);
+    try
+    {
+        while (!token.IsCancellationRequested)
+        {
+            try
+            {
+                if (account.ReadProfile() is { MemoryToken: not null } profile)
+                    await sync.SyncAsync(profile, token);
+            }
+            catch (Exception e) when (!token.IsCancellationRequested)
+            {
+                WindowsHost.Log("worker.log", $"Memory sync: {e.GetType().Name}.");
+            }
+            await Task.Delay(TimeSpan.FromMinutes(1), token);
+        }
+    }
+    catch (OperationCanceledException) when (token.IsCancellationRequested) { }
 }
 
 static async Task CollectDeviceAsync(LocalStore store, CancellationToken token)

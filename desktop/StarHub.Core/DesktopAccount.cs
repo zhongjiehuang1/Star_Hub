@@ -14,6 +14,11 @@ public sealed class DesktopAccountProfile
     public string? DesktopDisplayName { get; init; }
     public string Model { get; init; } = "";
     public string? ApiKey { get; init; }
+    public string? MemoryOwner { get; init; }
+    public string? MemoryToken { get; init; }
+    [System.Text.Json.Serialization.JsonIgnore]
+    public string CacheOwner => MemoryOwner ?? "unlinked/" + Email.ToLowerInvariant();
+    public string? DiagnosticsToken { get; init; }
 
     [System.Text.Json.Serialization.JsonIgnore]
     public string? Name => ValidName(DesktopDisplayName) ?? ValidName(DisplayName);
@@ -23,7 +28,8 @@ public sealed class DesktopAccountProfile
 
     public DesktopAccountProfile WithDesktopName(string? name) => new()
     {
-        Email = Email, Model = Model, ApiKey = ApiKey, DisplayName = DisplayName, DesktopDisplayName = ValidName(name)
+        Email = Email, Model = Model, ApiKey = ApiKey, DisplayName = DisplayName, DesktopDisplayName = ValidName(name),
+        DiagnosticsToken = DiagnosticsToken, MemoryOwner = MemoryOwner, MemoryToken = MemoryToken
     };
 
     public bool IsValid() => Email is { Length: > 0 and <= 254 } && !Email.Any(char.IsControl) &&

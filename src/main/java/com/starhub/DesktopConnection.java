@@ -84,7 +84,11 @@ final class DesktopConnection {
         if (AccountServlet.idleEnabled(config) && AccountIdleSessions.remaining(db, grant.path("idle").asText(), user, generation) <= 0)
             return null;
         ObjectNode profile = ModelGateway.JSON.createObjectNode().put("email", email).put("model", chatModel(grant.path("model").asText()));
+        profile.put("memoryOwner", generation).put("memoryToken", DesktopMemory.issue(config, user, generation, grant.path("password").asText(), Instant.now()));
         if (displayName != null && !displayName.isBlank()) profile.put("displayName", displayName.strip());
+        if (DesktopDiagnosticsServlet.enabled(config, email))
+            profile.put("diagnosticsToken", DesktopDiagnosticsServlet.issue(config, user, generation,
+                grant.path("password").asText(), Instant.now()));
         try (var query = db.prepareStatement("SELECT id,nonce,ciphertext FROM api_keys WHERE user_id=? AND provider=? AND selected=TRUE")) {
             query.setLong(1, user);
             query.setString(2, Catalog.OPEN_PROVIDER);
@@ -96,15 +100,15 @@ final class DesktopConnection {
         return profile;
     }
 
-    private static byte[] vault(Properties config) {
+    static byte[] vault(Properties config) {
         return Base64.getDecoder().decode(config.getProperty("vault.key"));
     }
 
-    private static String digest(byte[] bytes) throws GeneralSecurityException {
+    static String digest(byte[] bytes) throws GeneralSecurityException {
         return ENCODE.encodeToString(MessageDigest.getInstance("SHA-256").digest(bytes));
     }
 
-    private static boolean constantEquals(String left, String right) {
+    static boolean constantEquals(String left, String right) {
         return MessageDigest.isEqual(left.getBytes(StandardCharsets.US_ASCII), right.getBytes(StandardCharsets.US_ASCII));
     }
 }

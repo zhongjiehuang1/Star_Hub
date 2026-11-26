@@ -1,12 +1,12 @@
 'use strict';
 const {test}=require('node:test');const assert=require('node:assert/strict');const vm=require('node:vm');const fs=require('node:fs');const path=require('node:path');
-function setup(){
+function setup(window={}){
  const handlers={},pending=[];
  class Node{constructor(tag){this.tag=tag;this.children=[];this.listeners={};this._text='';this.id='';this.open=false;}set textContent(value){this._text=String(value);this.children=[];}get textContent(){return this._text+this.children.map(c=>typeof c==='string'?c:c.textContent).join('');}append(...items){this.children.push(...items);}replaceChildren(...items){this._text='';this.children=[...items];}insertBefore(node){this.children.push(node);}before(node){root.children.push(node);}setAttribute(){}addEventListener(name,fn){(this.listeners[name]??=[]).push(fn);}fire(name){for(const fn of this.listeners[name]||[])fn();}}
  const root=new Node('root'),settings=new Node('dialog'),close=new Node('button'),form=new Node('form');settings.id='accountSettings';close.id='closeAccountSettings';form.id='chatForm';root.append(settings,close,form);
  function find(node,id){if(node.id===id)return node;for(const child of node.children||[]){if(typeof child==='string')continue;const value=find(child,id);if(value)return value;}return null;}
  const document={createElement:tag=>new Node(tag),createTextNode:text=>text,getElementById:id=>find(root,id),addEventListener(name,fn){(handlers[name]??=[]).push(fn);},fire(name){for(const fn of handlers[name]||[])fn();}};
- const ctx={document,accountEmail:'a@example.test',accountIdentityRevision:1,language:'en',window:{},errorText:x=>x,workspaceRequest:()=>new Promise((resolve,reject)=>pending.push({resolve,reject}))};vm.createContext(ctx);vm.runInContext(fs.readFileSync(path.join(__dirname,'../../main/webapp/memory.js'),'utf8'),ctx);return {ctx,document,settings,root,pending};
+ const ctx={document,accountEmail:'a@example.test',accountIdentityRevision:1,language:'en',window,errorText:x=>x,workspaceRequest:()=>new Promise((resolve,reject)=>pending.push({resolve,reject}))};vm.createContext(ctx);vm.runInContext(fs.readFileSync(path.join(__dirname,'../../main/webapp/memory.js'),'utf8'),ctx);return {ctx,document,settings,root,pending};
 }
 const tick=()=>new Promise(resolve=>setImmediate(resolve));
 test('memory summary uses saved entries and discards a result when the account changes',async()=>{
@@ -71,4 +71,41 @@ test('failed background memory updates tell the user without retrying',async()=>
 test('a second memory update blocked by an earlier pending operation says this turn was not saved',async()=>{
  const x=setup();let sends=0;x.ctx.StarProviderOperations={async prepare(){const error=Error('previous request pending');error.code='PROVIDER_OPERATION_UNKNOWN';throw error;},async requestPrepared(){sends++;}};
  const api=vm.runInContext('StarMemory',x.ctx),token={account:'a@example.test',accountRevision:1,text:'我喜欢徒步',revision:1};await api.rememberSemantic(token);assert.equal(sends,0);assert.match(x.root.textContent,/this turn was not saved/);assert.doesNotMatch(x.root.textContent,/Memory update is unconfirmed/);
+});
+test('a saved web edit survives disconnect and reconciles on the online event',async()=>{
+ const events={},storage=new Map();
+ const win={addEventListener(name,fn){events[name]=fn;},prompt(){return 'practice with tables';}};
+ const x=setup(win);let online=true,website='practice with text',revision=5;
+ x.ctx.crypto=require('node:crypto').webcrypto;
+ x.ctx.localStorage={get length(){return storage.size;},key:i=>[...storage.keys()][i],getItem:k=>storage.get(k),setItem:(k,v)=>storage.set(k,v),removeItem:k=>storage.delete(k)};
+ x.ctx.workspaceRequest=async body=>{
+  if(!online)throw Error('offline');
+  if(body.action==='listMemories')return {owner:'owner-A',enabled:true,revision,memories:[{id:'note-A',text:website}]};
+  assert.equal(body.action,'editMemory');assert.equal(body.memoryRevision,revision);
+  website=body.text;revision++;return {revision};
+ };
+ x.document.fire('starhub:account-settings-opening');x.settings.open=true;await tick();
+ const list=x.document.getElementById('memoryPanel').children.find(n=>n.tag==='ul');
+ online=false;list.children[0].children.find(n=>n.textContent==='Edit').onclick();await tick();
+ assert.equal(website,'practice with text');assert.match(x.root.textContent,/practice with tables/);
+ assert.equal(storage.size,1);
+ const restartedEvents={};
+ const restored=setup({addEventListener(name,fn){restartedEvents[name]=fn;}});
+ restored.ctx.localStorage=x.ctx.localStorage;
+ restored.ctx.workspaceRequest=x.ctx.workspaceRequest;
+ online=true;restartedEvents.online();await tick();await tick();
+ assert.equal(website,'practice with tables');assert.equal(storage.size,0);
+});
+test('reconnecting another account leaves the first account’s durable draft untouched',async()=>{
+ const events={},storage=new Map([['starhub.memory.draft.owner-A.k',JSON.stringify({
+  key:'k',id:'a',before:'old note',text:'private A draft',time:1
+ })]]);
+ const x=setup({addEventListener(name,fn){events[name]=fn;}});
+ x.ctx.localStorage={get length(){return storage.size;},key:i=>[...storage.keys()][i],getItem:k=>storage.get(k)};
+ x.ctx.accountEmail='b@example.test';x.ctx.accountIdentityRevision=2;
+ const calls=[];
+ x.ctx.workspaceRequest=async body=>{calls.push(body.action);return {owner:'owner-B',enabled:true,revision:1,memories:[]};};
+ events.online();await tick();
+ assert.deepEqual(calls,['listMemories']);assert.equal(storage.size,1);
+ assert.doesNotMatch(x.root.textContent,/private A draft/);
 });

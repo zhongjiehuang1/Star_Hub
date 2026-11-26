@@ -31,6 +31,24 @@ public sealed partial class ProviderClient
         return text;
     }
 
+    public async Task<byte[]> SpeakMandarinAsync(string key, string text, CancellationToken cancellationToken)
+    {
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        deadline.CancelAfter(TimeSpan.FromSeconds(60));
+        using var request = new HttpRequestMessage(HttpMethod.Post, new Uri(ChatEngine.OpenAiEndpoint, "audio/speech"))
+        {
+            Content = JsonContent.Create(new { model = "gpt-4o-mini-tts", voice = "coral", response_format = "mp3",
+                input = text[..Math.Min(text.Length, 4000)], instructions = "Read this lesson clearly in standard Mandarin." })
+        };
+        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", key);
+        using var response = await remote.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, deadline.Token).ConfigureAwait(false);
+        if (!response.IsSuccessStatusCode) throw HttpError(response.StatusCode);
+        await response.Content.LoadIntoBufferAsync(8 * 1024 * 1024, deadline.Token).ConfigureAwait(false);
+        var audio = await response.Content.ReadAsByteArrayAsync(deadline.Token).ConfigureAwait(false);
+        if (audio.Length == 0) throw new StarHubException("No speech audio was returned.");
+        return audio;
+    }
+
     public async Task<byte[]> MakeImageAsync(string key, string model, string prompt, Attachment? input,
         CancellationToken cancellationToken)
     {

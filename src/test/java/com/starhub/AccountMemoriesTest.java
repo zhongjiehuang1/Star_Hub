@@ -22,6 +22,34 @@ class AccountMemoriesTest {
         }c.setAutoCommit(false);return c;
     }
     private static List<MemoryExtractor.Candidate> extract(String value){return MemoryExtractor.extract(value);}
+    @Test void desktopGrantIsScopedAndOnlyTransfersAccountNotes() throws Exception {
+        Properties config=new Properties();
+        config.setProperty("vault.key", Base64.getEncoder().encodeToString(KEY));
+        var now=java.time.Instant.now();
+        byte[] passwordHash={1,2,3};
+        String hash=DesktopConnection.digest(passwordHash);
+        String token=DesktopMemory.issue(config,1,GEN,hash,now);
+        assertNull(DesktopDiagnosticsServlet.decode(config,token,now));
+        assertNull(DesktopMemory.decode(config,"Bearer "+DesktopDiagnosticsServlet.issue(config,1,GEN,hash,now),now));
+        assertNull(DesktopMemory.decode(config,"Bearer "+token,now.plus(java.time.Duration.ofDays(91))));
+        var grant=DesktopMemory.decode(config,"Bearer "+token,now);
+        try(var c=database();var sql=c.createStatement()){
+            sql.execute("ALTER TABLE users ADD password_hash VARBINARY(32) DEFAULT X'010203'");
+            var read=ModelGateway.JSON.createObjectNode().put("action","read");
+            assertFalse(DesktopMemory.apply(c,config,grant,read).path("enabled").asBoolean());
+            assertEquals(400,assertThrows(StorageFailure.class,()->DesktopMemory.apply(c,config,grant,read.deepCopy().put("chat","forbidden"))).status);
+            AccountMemories.setEnabled(c,1,GEN,0,true);
+            String id=UUID.randomUUID().toString();
+            var add=ModelGateway.JSON.createObjectNode().put("action","add").put("revision",1).put("id",id).put("text","Practice with a worksheet");
+            assertEquals(id,DesktopMemory.apply(c,config,grant,add).path("memories").get(0).path("id").asText());
+            assertEquals(409,assertThrows(StorageFailure.class,()->DesktopMemory.apply(c,config,grant,add)).status);
+            assertEquals(0,AccountMemories.state(c,2,OTHER,KEY).path("memories").size());
+            AccountMemories.edit(c,1,GEN,2,id,"Next topic is overhead",KEY);
+            assertEquals("Next topic is overhead",DesktopMemory.apply(c,config,grant,read).path("memories").get(0).path("text").asText());
+            sql.execute("UPDATE users SET password_hash=X'99' WHERE id=1");
+            assertEquals(401,assertThrows(StorageFailure.class,()->DesktopMemory.apply(c,config,grant,read)).status);
+        }
+    }
     @Test void migrationRestrictsAccountDeletionUntilBothMemoryTablesAreExplicitlyCleaned()throws Exception{
         String migration=Files.readString(Path.of("deploy/migrations/018_account_memory.sql"));
         assertFalse(migration.toUpperCase(Locale.ROOT).contains("ON DELETE CASCADE"));

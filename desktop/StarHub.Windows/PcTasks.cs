@@ -59,6 +59,7 @@ public sealed partial class MainWindow
             throw new StarHubException(T("This Windows task contains an unsupported step. Try /pc open notepad or /pc 打开任务管理器."));
 
         var turn = store.StartTurn(conversationId, prompt, LocalPcModel, attachment, projectId, localOnly: true);
+        using var diagnostic = DesktopDiagnostic.Start(accountProfile, "computer_plan");
         using var cancellation = new CancellationTokenSource();
         request = cancellation;
         SetSending(true);
@@ -78,6 +79,7 @@ public sealed partial class MainWindow
                 cancellation.Token.ThrowIfCancellationRequested();
                 Say(T("Running a Windows task…"));
                 results.Add(await ExecutePcOperationAsync(operation, cancellation.Token));
+                diagnostic?.Step(operation.ToString().ToLowerInvariant(), true);
             }
             turn = turn with { State = TurnState.Completed };
         }
@@ -89,12 +91,14 @@ public sealed partial class MainWindow
         {
             string detail = error is StarHubException ? T(error.Message) : T("Windows could not complete this step.");
             WindowsHost.Log("desktop.log", $"Windows task: {error.GetType().Name} (0x{error.HResult:X8}).");
+            diagnostic?.Finish(TurnState.Failed, $"0x{error.HResult:X8}");
             turn = turn with { State = TurnState.Failed, Detail = detail };
         }
         finally
         {
             try
             {
+                diagnostic?.Finish(turn.State);
                 turn = turn with { Reply = string.Join("\n\n", results) };
                 store.FinishTurn(turn);
                 ShowResult(panel, turn);

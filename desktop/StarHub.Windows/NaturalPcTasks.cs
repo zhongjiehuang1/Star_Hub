@@ -11,6 +11,8 @@ public sealed partial class MainWindow
 {
     private void ShowComputerModeHint(string prompt, string? projectId)
     {
+        using var diagnostic = DesktopDiagnostic.Start(accountProfile, "computer_request");
+        diagnostic?.Finish(TurnState.Completed, "computer_mode_off");
         var turn = store.StartTurn(conversationId, prompt, LocalPcModel, attachment, projectId, localOnly: true) with
         {
             State = TurnState.Completed,
@@ -27,7 +29,7 @@ public sealed partial class MainWindow
     }
 
     private Task RunDirectPcTaskAsync(string prompt, PcDirectAction action, string? projectId) =>
-        RunComputerTaskAsync(prompt, projectId, LocalPcModel, async (token, _) =>
+        RunComputerTaskAsync(prompt, projectId, LocalPcModel, async (_, token, _) =>
         {
             var result = await Task.Run(() => new WindowsPcTaskHost(WindowsHost.TaskWorkspace(), false, localMode: true)
                 .ExecuteAsync(action.Tool, action.Arguments, token), token);
@@ -41,7 +43,7 @@ public sealed partial class MainWindow
             };
             return new PcTaskRun(MarkdownStep(WindowsResultText(result.Summary)) + reply, [], result.Succeeded,
                 Detail: result.Succeeded ? null : "Check the Windows result above.");
-        });
+        }, action.Tool);
 
     private Task RunNaturalPcTaskAsync(string prompt, string? projectId, IReadOnlyList<Turn> recent, bool webSearch)
     {
@@ -56,7 +58,7 @@ public sealed partial class MainWindow
             string reply = turn.LocalOnly ? turn.GeneratedPdf ?? "" : turn.Reply;
             return $"User: {ClipContext(turn.Prompt, 900)}\nResult: {ClipContext(reply, 1200)}";
         }));
-        return RunComputerTaskAsync(prompt, projectId, $"Windows · {ModelName(model)}", async (token, onStep) =>
+        return RunComputerTaskAsync(prompt, projectId, $"Windows · {ModelName(model)}", async (_, token, onStep) =>
         {
             string key = MediaKey();
             var host = new WindowsPcTaskHost(WindowsHost.TaskWorkspace(), maintenance, localMode: true,
@@ -64,13 +66,14 @@ public sealed partial class MainWindow
             return await new PcTaskAgent(providerClient).RunAsync(key, goal, model, folderGranted: true, maintenance,
                 (tool, args, ct) => Task.Run(() => host.ExecuteAsync(tool, args, ct), ct),
                 onStep, token, useDrivePaths: true, recent: context, webSearch: webSearch);
-        });
+        }, "computer_task");
     }
 
     private async Task RunComputerTaskAsync(string prompt, string? projectId, string model,
-        Func<CancellationToken, Action<PcTaskStep>, Task<PcTaskRun>> execute)
+        Func<string, CancellationToken, Action<PcTaskStep>, Task<PcTaskRun>> execute, string operation)
     {
         var turn = store.StartTurn(conversationId, prompt, model, attachment, projectId, localOnly: true);
+        using var diagnostic = DesktopDiagnostic.Start(accountProfile, operation);
         using var cancellation = new CancellationTokenSource(TimeSpan.FromMinutes(4));
         request = cancellation;
         SetSending(true);
@@ -86,9 +89,10 @@ public sealed partial class MainWindow
         var steps = new List<PcTaskStep>();
         try
         {
-            var result = await execute(cancellation.Token, step =>
+            var result = await execute(turn.Id, cancellation.Token, step =>
             {
                 steps.Add(step);
+                diagnostic?.Step(step.Tool, step.Succeeded);
                 DispatcherQueue.TryEnqueue(() =>
                 {
                     if (request != cancellation) return;
@@ -99,11 +103,12 @@ public sealed partial class MainWindow
             bool verified = result.Finished && steps.All(step => step.Succeeded);
             turn = turn with
             {
-                Reply = result.Reply, Sources = result.Sources ?? [],
+                Reply = result.Reply, Sources = result.Sources ?? [], LocalWork = result.Work,
                 State = verified ? TurnState.Completed : TurnState.Partial,
                 Detail = result.Detail is { } detail ? T(detail)
                     : verified ? "" : T("Review the Windows steps for anything that could not be verified.")
             };
+            diagnostic?.Finish(turn.State, result.DiagnosticCode);
         }
         catch (OperationCanceledException) when (cancellation.IsCancellationRequested)
         {
@@ -111,12 +116,14 @@ public sealed partial class MainWindow
         }
         catch (Exception error)
         {
+            diagnostic?.Finish(TurnState.Failed, $"0x{error.HResult:X8}");
             turn = turn with { State = TurnState.Failed, Detail = DialogError(error) };
         }
         finally
         {
             try
             {
+                diagnostic?.Finish(turn.State);
                 string trail = steps.Count == 0 ? "" : $"\n\n**{T("Windows task steps")}**\n" +
                     string.Join("\n", steps.Select(step => "- " + MarkdownStep(StepLabel(step))));
                 turn = turn with

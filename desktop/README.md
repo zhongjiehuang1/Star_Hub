@@ -15,6 +15,10 @@ Star Hub Desktop runs in a native WinUI 3 window on Windows 10 version 22H2 (bui
 7. Select **Device** in the app header to see 5- or 30-minute trends for CPU, memory, GPU and disks. Expand a category for network and power trends, capacity bars or a process ranking. The background worker collects readings about every two seconds while the Windows session and worker are running. Expand **Hardware and firmware** for device inventory. Windows and hardware drivers determine which measurements are available.
 8. Ask chat “How is my PC running?”, “Why is my computer slow?” or “最近半小时电脑为什么变慢？”. Star Hub compares live readings with recent history and an earlier baseline when enough samples exist, then offers steps for the observed pressure. The composer shows **Local device analysis** for these questions. Local analysis needs no provider key.
 
+**Account memory.** After upgrading, choose your account → **Refresh from website** once. Enable **Long-term memory** on Windows or **Memory** on the website. “Remember that …” saves a short note immediately, including offline. The worker syncs saved notes while signed in, normally within a minute of reconnecting. “What do you remember about me?” works offline. Switch accounts to switch the memory cache. Workbook practice shares the next topic only. Review conflicting drafts in Long-term memory. Anonymous local notes, full conversations, local files, and device history stay on the PC.
+
+**Local Qwen.** Install Ollama and run `ollama pull qwen2.5:0.5b` once while online. Leave Ollama running on Windows. Automatic mode discovers an installed Qwen chat model for simple text tasks, including offline. It also discovers Qwen served by llama.cpp on `127.0.0.1:8080/v1`. Cloud search, hosted tools and PDF input use OpenAI when connected. The installer does not include model weights.
+
 OpenAI web search returns linked sources. Hosted data analysis uses OpenAI's Code Interpreter tool. The desktop streams directly from OpenAI, Ollama at loopback, or the configured compatible API. In Settings, the OpenAI list includes GPT-6.1 Terra and GPT-6 Luna alongside GPT-6.2 Sol and Astra. Turn on **Search the web** next to the attachment button for a current question.
 
 Open **Settings → Language / 界面语言** to switch between English, Simplified Chinese and the Windows language. To update, finish active work, close Star Hub and run the newer setup from the download page. Setup replaces the installed app and preserves its local data. The Device panel shows five-minute trends for CPU, memory, disk activity and GPU usage when available.
@@ -24,6 +28,10 @@ Open **Settings → Language / 界面语言** to switch between English, Simplif
 Complex tasks use the account's OpenAI connection, with Luna or Terra selected automatically. Star Hub shows the plan and the verified results in the conversation. It can read local text and searchable PDFs, create and update text files, copy and move files, open installed apps and use supported Windows accessibility controls. Relevant tool results go to the model for planning and the task record stays on the PC. Clearing the DNS cache and checking the Windows image use Windows UAC.
 
 Ask for a PDF or say **把刚才的回复保存成 PDF**. Use a directory or full PDF filename in the request when computer operation is on. The default location is Desktop. With computer operation off, use **Save PDF** on the generated file card to choose a location.
+
+Say **把这批领料和工时做成 Excel，存到文档** and select the folder of source tables when prompted. Use a batch for one production period, with headers such as `产品,领料数量,材料单价` for material and `产品,机器工时,完工数量,人工成本` for work logs. An optional table with a `制造费用` column supplies shared costs for allocation by machine hours. UTF-8 CSV and ordinary XLSX tables are supported. Open the workbook from the result and check its Review sheet for missing or inconsistent data. Say **把刚才那份按产品汇总** to add a summary to the same workbook.
+
+Say **把这批照片按拍摄日期整理** to save verified copies in date folders under **Star Hub Photos**. Photos without an original capture date go into **Unknown date**. To resume an interrupted local workbook or photo task, open its conversation and say **继续刚才的任务**.
 
 The main window and background worker start at Windows sign-in. Closing with active work or an unsent draft prompts for confirmation.
 
@@ -41,7 +49,7 @@ The worker runs up to two tasks at a time. One overdue run is eligible when the 
 
 ## Build and distribution
 
-On an x64 Windows machine, install Git, PowerShell 7.4 or later, Inno Setup 6 and the .NET 10 SDK pinned in `global.json`. NuGet restores the Windows SDK build tools. Run these commands from this directory.
+On an x64 Windows machine, install PowerShell 7.4 or later, Inno Setup 6 and the .NET 10 SDK pinned in `global.json`. NuGet restores the Windows SDK build tools. A Git checkout needs Git. The desktop source ZIP from the download page includes the source commit stamp and the model catalog. Extract the full ZIP, then run these commands from its `desktop` directory.
 
 ```powershell
 dotnet test StarHub.Tests/StarHub.Tests.csproj -c Release
@@ -63,3 +71,9 @@ The preview includes streaming chat, attachments, Markdown and tables, sources, 
 Before publishing, verify the Windows install and the live OpenAI checks. On Windows, set `STARHUB_OPENAI_TEST_KEY` for the test process and run `dotnet run --project StarHub.LiveChecks -c Release -f net10.0-windows10.0.22000.0`. The live check uses synthetic PCM for audio, a new disposable Notepad window, and the consented Windows maintenance operations on the test machine. The unit tests also exercise a real loopback MCP server. For the optional manual CI run with live checks, provide the test key to the restricted `starhub-windows-live` environment and allow the intended ref.
 
 To verify Chinese task planning, file operations and Windows authorization on an interactive Windows test machine, append `-- pc-task` to the live check command. It uses a temporary folder and checks the copied bytes and that Notepad opens. Approve the DNS cache test in Windows when prompted.
+
+### Learn with a workbook
+
+Say “教我制造业成本核算” or “teach me manufacturing costing” with Operate this PC enabled to start with a small simulated factory batch. To use your records, generate a cost workbook and select **Learn with this workbook**. Each step highlights inputs with their sheet and cell addresses. Enter or dictate a number to check it locally, or ask a question about the visible step. Read aloud uses Windows speech. A Mandarin lesson uses the linked OpenAI speech API if Windows has no Chinese voice installed. Spoken input uses your linked OpenAI connection and shows captions or an input meter. A follow-up question sends the current step and recent questions to the selected model.
+
+The learning notebook on this PC keeps worked examples, attempts, explanations, personal notes and the next step. “继续学” or “resume my lesson” reopens the workbook. Returning on a later local calendar day starts a new practice issue before returning to the pending exercise. Replacement data gets its own progress. Unit-cost practice assumes no opening or closing work in progress.

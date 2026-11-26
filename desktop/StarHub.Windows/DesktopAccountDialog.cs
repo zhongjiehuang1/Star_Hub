@@ -34,6 +34,8 @@ public sealed partial class MainWindow
             ? T("Save an OpenAI key on the website, then refresh this connection.")
             : ModelName(accountProfile.Model)));
         details.Children.Add(Label(T("Conversations and files stay on this PC.")));
+        if (original.DiagnosticsToken is not null)
+            details.Children.Add(Label(T("This connection sends operation results to the Star Hub server for troubleshooting.")));
         var dialog = Dialog(accountProfile.Name ?? T("Star Hub account"), details);
         dialog.PrimaryButtonText = T("Save name");
         dialog.SecondaryButtonText = T("Disconnect account");
@@ -87,7 +89,11 @@ public sealed partial class MainWindow
 
     private void ApplyDesktopAccount(DesktopAccountProfile? profile)
     {
+        if (accountProfile?.CacheOwner != profile?.CacheOwner) NewConversation();
         accountProfile = profile;
+        if (profile?.MemoryToken is not null) _ = RefreshAccountMemoryAsync(profile);
+        using var diagnostic = DesktopDiagnostic.Start(profile, "desktop_connect");
+        diagnostic?.Finish(TurnState.Completed);
         accountChoice = null;
         UpdateAccountLabel();
         loading = true;

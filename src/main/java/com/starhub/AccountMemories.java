@@ -91,14 +91,19 @@ final class AccountMemories {
     }
     static ObjectNode save(Connection c,long user,String generation,long expected,List<MemoryExtractor.Candidate> candidates,byte[] key)throws SQLException,GeneralSecurityException{
         if(candidates==null||candidates.size()>MAX_BATCH)throw invalid();for(MemoryExtractor.Candidate entry:candidates)if(!MemoryExtractor.allowed(entry))throw invalid();
-        return saveValidated(c,user,generation,expected,candidates,key);
+        return saveValidated(c,user,generation,expected,candidates,key,null);
     }
     // Caller must bind providerReply to the original authenticated paid
     // operation and confirm saved user-message provenance before invoking it.
     static ObjectNode saveSemantic(Connection c,long user,String generation,long expected,String userInput,String providerReply,byte[] key)throws SQLException,GeneralSecurityException,java.io.IOException{
-        return saveValidated(c,user,generation,expected,SemanticMemoryExtractor.validate(userInput,providerReply),key);
+        return saveValidated(c,user,generation,expected,SemanticMemoryExtractor.validate(userInput,providerReply),key,null);
     }
-    private static ObjectNode saveValidated(Connection c,long user,String generation,long expected,List<MemoryExtractor.Candidate> candidates,byte[] key)throws SQLException,GeneralSecurityException{
+    static void addNote(Connection c,long user,String generation,long expected,String memoryId,String value,byte[] key)throws SQLException,GeneralSecurityException {
+        String text=validateText(value);
+        if(MemoryExtractor.containsSensitive(text))throw invalid();
+        saveValidated(c,user,generation,expected,List.of(new MemoryExtractor.Candidate("FACT",text)),key,id(memoryId));
+    }
+    private static ObjectNode saveValidated(Connection c,long user,String generation,long expected,List<MemoryExtractor.Candidate> candidates,byte[] key,String newId)throws SQLException,GeneralSecurityException{
         checkKey(key);if(candidates==null||candidates.size()>MAX_BATCH)throw invalid();Set<String> seen=new HashSet<>();for(MemoryExtractor.Candidate entry:candidates)if(entry==null||!seen.add(entry.kind()))throw invalid();
         lockOwner(c,user,generation);Settings old=settings(c,user,generation);expect(old,expected);if(!old.enabled())throw new StorageFailure(409,"MEMORY_DISABLED","记忆功能未开启。 ");
         int count;try(PreparedStatement q=c.prepareStatement("SELECT COUNT(*) FROM starhub_account_memories WHERE user_id=? AND owner_generation=?")){q.setLong(1,user);q.setString(2,generation);try(ResultSet r=q.executeQuery()){r.next();count=r.getInt(1);}}
@@ -108,7 +113,7 @@ final class AccountMemories {
             try(PreparedStatement q=c.prepareStatement(sql)){q.setLong(1,user);q.setString(2,generation);if(SINGLETONS.contains(type))q.setString(3,type);else q.setBytes(3,hash);try(ResultSet r=q.executeQuery()){if(r.next()){existing=id(r.getString(1));current=r.getBytes(2);if(r.next())throw new SQLException("Ambiguous memory record");}}}
             if(existing!=null&&java.security.MessageDigest.isEqual(current,hash))continue;
             if(existing==null&&count>=MAX_ITEMS)throw new StorageFailure(413,"MEMORY_LIMIT","记忆数量已达上限，请先删除不需要的内容。 ");
-            String record=existing==null?UUID.randomUUID().toString():existing;byte[] nonce=new byte[12];RANDOM.nextBytes(nonce);byte[] cipher=AccountServlet.crypt(true,text.getBytes(StandardCharsets.UTF_8),key,nonce,aad(user,generation,record,type));
+            String record=existing==null?(newId==null?UUID.randomUUID().toString():newId):existing;byte[] nonce=new byte[12];RANDOM.nextBytes(nonce);byte[] cipher=AccountServlet.crypt(true,text.getBytes(StandardCharsets.UTF_8),key,nonce,aad(user,generation,record,type));
             if(existing==null){try(PreparedStatement q=c.prepareStatement("INSERT INTO starhub_account_memories(id,user_id,owner_generation,kind,fingerprint,nonce,ciphertext) VALUES(?,?,?,?,?,?,?)")){q.setString(1,record);q.setLong(2,user);q.setString(3,generation);q.setString(4,type);q.setBytes(5,hash);q.setBytes(6,nonce);q.setBytes(7,cipher);q.executeUpdate();}count++;}
             else try(PreparedStatement q=c.prepareStatement("UPDATE starhub_account_memories SET fingerprint=?,nonce=?,ciphertext=?,updated_at=CURRENT_TIMESTAMP(3) WHERE id=? AND user_id=? AND owner_generation=?")){q.setBytes(1,hash);q.setBytes(2,nonce);q.setBytes(3,cipher);q.setString(4,record);q.setLong(5,user);q.setString(6,generation);if(q.executeUpdate()!=1)throw conflict();}
             saved++;
@@ -130,7 +135,7 @@ final class AccountMemories {
                 if(!r.next())throw new StorageFailure(404,"MEMORY_NOT_FOUND","记忆不存在或已删除。 ");type=kind(r.getString(1));previous=r.getBytes(2);
             }
         }
-        boolean semantic=Set.of("PREFERENCE","FACT").contains(type)&&text.equals(SemanticMemoryExtractor.eligibleInput(text));
+        boolean semantic=("FACT".equals(type)&&!MemoryExtractor.containsSensitive(text))||Set.of("PREFERENCE","FACT").contains(type)&&text.equals(SemanticMemoryExtractor.eligibleInput(text));
         if(!semantic&&!MemoryExtractor.allowed(new MemoryExtractor.Candidate(type,text)))throw invalid();
         byte[] hash=fingerprint(key,user,generation,type,text);
         if(java.security.MessageDigest.isEqual(previous,hash))return ModelGateway.JSON.createObjectNode().put("edited",false).put("revision",old.revision());
