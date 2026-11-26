@@ -32,6 +32,13 @@ public sealed class DesktopAccountProfile
         DiagnosticsToken = DiagnosticsToken, MemoryOwner = MemoryOwner, MemoryToken = MemoryToken
     };
 
+    [System.Text.Json.Serialization.JsonIgnore]
+    public bool CanRestoreMemory => Guid.TryParseExact(MemoryOwner, "D", out _) && !string.IsNullOrWhiteSpace(MemoryToken);
+
+    public bool MatchesConnection(DesktopAccountProfile next) =>
+        Email.Equals(next.Email, StringComparison.OrdinalIgnoreCase) &&
+        (MemoryOwner is null || string.Equals(MemoryOwner, next.MemoryOwner, StringComparison.OrdinalIgnoreCase));
+
     public bool IsValid() => Email is { Length: > 0 and <= 254 } && !Email.Any(char.IsControl) &&
         Model is { Length: > 0 and <= 160 } && Model.All(c => char.IsAsciiLetterOrDigit(c) || "_.:-".Contains(c)) &&
         (ApiKey is null || ApiKey is { Length: > 0 and <= 4096 } && ApiKey.All(c => c is >= '!' and <= '~'));

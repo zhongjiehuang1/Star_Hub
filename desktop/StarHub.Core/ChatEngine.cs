@@ -3,7 +3,8 @@ using System.Text.RegularExpressions;
 
 namespace StarHub.Core;
 
-public sealed class ChatEngine(LocalStore store, ICredentials credentials, ProviderClient client, Func<DesktopAccountProfile?>? readAccount = null)
+public sealed class ChatEngine(LocalStore store, ICredentials credentials, ProviderClient client, Func<DesktopAccountProfile?>? readAccount = null,
+    ILocalQwen? qwen = null)
 {
     public const string DeviceAnalysisModel = "Star Hub · Local device analysis";
     public const string OpenAiCredential = "StarHub/OpenAI";
@@ -31,8 +32,19 @@ public sealed class ChatEngine(LocalStore store, ICredentials credentials, Provi
     public async Task<ModelRoute> ResolveAsync(Preferences settings, ChatOptions options, string prompt,
         Attachment? file, CancellationToken token)
     {
+        if (options.Provider == Provider.LocalQwen)
+        {
+            if (file is not null || options.WebSearch || options.DataAnalysis)
+                throw new StarHubException("Offline Qwen supports text conversations.");
+            if (qwen?.IsInstalled != true) throw new StarHubException("Set up offline chat first.");
+            return await qwen.StartAsync(token).ConfigureAwait(false);
+        }
         if (options.Provider == Provider.Automatic && file is null && !options.WebSearch && !options.DataAnalysis && options.Reasoning is null)
+        {
+            if (qwen?.IsInstalled == true && PreferLocal(prompt, credentials.Read(OpenAiCredential) is not null))
+                return await qwen.StartAsync(token).ConfigureAwait(false);
             settings = await client.FindLocalModelAsync(settings,token).ConfigureAwait(false);
+        }
         return Resolve(settings, options, prompt, file);
     }
 
@@ -45,10 +57,7 @@ public sealed class ChatEngine(LocalStore store, ICredentials credentials, Provi
         bool local = !string.IsNullOrWhiteSpace(settings.OllamaModel);
         bool loopback = Uri.TryCreate(settings.CompatibleEndpoint, UriKind.Absolute, out var endpoint) &&
             endpoint.IsLoopback && !string.IsNullOrWhiteSpace(settings.CompatibleModel);
-        bool complex = Regex.IsMatch(prompt, @"深入分析|详细推导|审计|全面核查|deep research|in.depth analysis|prove that",
-            RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
-        if (file is null && ((!complex && prompt.Length <= LocalThreshold) || !openAiConfigured ||
-            !System.Net.NetworkInformation.NetworkInterface.GetIsNetworkAvailable()))
+        if (file is null && PreferLocal(prompt, openAiConfigured))
         {
             if (local) return Provider.Ollama;
             if (loopback) return Provider.Compatible;
@@ -57,6 +66,14 @@ public sealed class ChatEngine(LocalStore store, ICredentials credentials, Provi
         if (!string.IsNullOrWhiteSpace(settings.CompatibleEndpoint) && !string.IsNullOrWhiteSpace(settings.CompatibleModel))
             return Provider.Compatible;
         return local ? Provider.Ollama : Provider.OpenAI;
+    }
+
+    private static bool PreferLocal(string prompt, bool openAiConfigured)
+    {
+        bool complex = Regex.IsMatch(prompt, @"深入分析|详细推导|审计|全面核查|deep research|in.depth analysis|prove that",
+            RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+        return (!complex && prompt.Length <= LocalThreshold) || !openAiConfigured ||
+            !System.Net.NetworkInformation.NetworkInterface.GetIsNetworkAvailable();
     }
 
     public static bool UsesDeviceAnalysis(string prompt, ChatOptions options, Attachment? file, bool followsDevice) =>
@@ -130,7 +147,7 @@ public sealed class ChatEngine(LocalStore store, ICredentials credentials, Provi
             return recall;
         }
         var route = await ResolveAsync(settings, options, prompt, file, cancellationToken);
-        var inputs = store.RecentContext(conversationId, route.Provider, file is null).ToList();
+        var inputs = store.RecentContext(conversationId, route.Provider, file is null && route.Provider != Provider.LocalQwen).ToList();
         var excerpts = options.ProjectId is null ? [] : store.SearchProject(options.ProjectId, prompt);
         string input = prompt;
         if (excerpts.Count > 0)
@@ -158,14 +175,27 @@ public sealed class ChatEngine(LocalStore store, ICredentials credentials, Provi
         if (outcome.Offline && options.Provider == Provider.Automatic && route.Provider == Provider.OpenAI &&
             file is null && !options.WebSearch && !options.DataAnalysis && options.Reasoning is null && !cancellationToken.IsCancellationRequested)
         {
-            var available = await client.FindLocalModelAsync(settings,cancellationToken).ConfigureAwait(false);
-            var local = SelectProvider(available,options,prompt,openAiConfigured:false);
-            if (local == Provider.Ollama || (local == Provider.Compatible && CompatibleEndpoint(available.CompatibleEndpoint).IsLoopback))
+            try
             {
-                var fallback = Resolve(available,options with { Provider=local },prompt);
-                outcome = await RunAsync(request with { Route=fallback },delta,cancellationToken).ConfigureAwait(false);
-                turn = turn with { Model=$"{DisplayProvider(local)} · {fallback.Model}" };
+                ModelRoute? fallback = null;
+                if (qwen?.IsInstalled == true) fallback = await qwen.StartAsync(cancellationToken).ConfigureAwait(false);
+                else
+                {
+                    var available = await client.FindLocalModelAsync(settings,cancellationToken).ConfigureAwait(false);
+                    var local = SelectProvider(available,options,prompt,openAiConfigured:false);
+                    if (local == Provider.Ollama || (local == Provider.Compatible && CompatibleEndpoint(available.CompatibleEndpoint).IsLoopback))
+                        fallback = Resolve(available,options with { Provider=local },prompt);
+                }
+                if (fallback is not null)
+                {
+                    var retry = fallback.Provider == Provider.LocalQwen ? request with { Inputs = inputs.Select(i => i with { File = null }).ToArray() } : request;
+                    outcome = await RunAsync(retry with { Route=fallback },delta,cancellationToken).ConfigureAwait(false);
+                    turn = turn with { Model=$"{DisplayProvider(fallback.Provider)} · {fallback.Model}" };
+                }
             }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            { outcome = outcome with { State = TurnState.Cancelled, Detail = "Stopped." }; }
+            catch (StarHubException e) { outcome = outcome with { Detail = e.Message }; }
         }
         turn = turn with
         {
@@ -308,6 +338,7 @@ public sealed class ChatEngine(LocalStore store, ICredentials credentials, Provi
         Provider.OpenAI => "OpenAI",
         Provider.Ollama => "Ollama",
         Provider.Compatible => "Compatible API",
+        Provider.LocalQwen => "On this PC",
         _ => "Automatic"
     };
 

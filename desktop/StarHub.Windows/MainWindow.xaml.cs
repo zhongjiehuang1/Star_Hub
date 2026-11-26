@@ -23,6 +23,8 @@ public sealed partial class MainWindow : Window
     private readonly DesktopAccountStore desktopAccount = new();
     private readonly ProviderClient providerClient = new();
     private readonly ChatEngine engine;
+    private readonly WindowsQwen localQwen = new(AppContext.BaseDirectory);
+    private readonly CancellationTokenSource windowLifetime = new();
     private readonly nint hwnd;
     private readonly TrayIcon? tray;
     private Preferences settings;
@@ -45,7 +47,7 @@ public sealed partial class MainWindow : Window
         }
         store.MarkInterruptedChats();
         accountProfile = desktopAccount.ReadProfile();
-        engine = new ChatEngine(store, desktopAccount, providerClient, () => accountProfile);
+        engine = new ChatEngine(store, desktopAccount, providerClient, () => accountProfile, localQwen);
         loading = true;
         InitializeComponent();
         hwnd = WinRT.Interop.WindowNative.GetWindowHandle(this);
@@ -77,7 +79,10 @@ public sealed partial class MainWindow : Window
         AppWindow.Closing += ConfirmClosing;
         Closed += (_, _) =>
         {
+            System.Net.NetworkInformation.NetworkChange.NetworkAvailabilityChanged -= MemoryNetworkChanged;
+            windowLifetime.Cancel();
             request?.Cancel();
+            localQwen.Dispose();
             DisposeVoiceRecording();
             tray?.Dispose();
             StopReading();
@@ -94,6 +99,8 @@ public sealed partial class MainWindow : Window
         UpdateReasoning();
         UpdateTools();
         UpdateRoute();
+        System.Net.NetworkInformation.NetworkChange.NetworkAvailabilityChanged += MemoryNetworkChanged;
+        Shell.Loaded += (_, _) => ResumeMemoryConnection();
         Try(WindowsHost.EnsureWorkerRunning);
         using var diagnostic = DesktopDiagnostic.Start(accountProfile, "desktop_start");
         diagnostic?.Finish(TurnState.Completed);

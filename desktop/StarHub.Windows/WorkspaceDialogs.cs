@@ -159,12 +159,14 @@ public sealed partial class MainWindow
     {
         try
         {
-            await new AccountMemorySync(store).SyncAsync(profile, CancellationToken.None, enabled);
+            await new AccountMemorySync(store).SyncAsync(profile, windowLifetime.Token, enabled);
+            if (ReferenceEquals(profile, accountProfile)) SetMemoryReconnect(false);
             return WorkText("账号记忆已同步。","Account memory is up to date.");
         }
         catch (HttpRequestException e) when (e.StatusCode == System.Net.HttpStatusCode.Unauthorized)
         {
-            return WorkText("请在账号菜单中刷新网站连接。本机的修改已保留。","Refresh the website connection in your account menu. Your local changes are saved.");
+            if (ReferenceEquals(profile, accountProfile)) SetMemoryReconnect(true);
+            return WorkText("请点侧栏的“连接账号记忆”。本机的修改已保留。","Choose Connect account memory in the sidebar. Your local changes are saved.");
         }
         catch (Exception e) when (e is IOException or HttpRequestException or OperationCanceledException or Microsoft.Data.Sqlite.SqliteException or System.Text.Json.JsonException)
         {
@@ -179,7 +181,7 @@ public sealed partial class MainWindow
         string L(string zh,string en) => WorkText(zh,en);
         var body = new StackPanel { Spacing = 8 };
         body.Children.Add(Label(profile is null ? T("Star Hub recalls related notes and saves notes you explicitly ask it to remember.")
-            : profile.MemoryToken is null ? L("请在账号菜单中刷新网站连接，以启用记忆同步。","Refresh the website connection in your account menu to sync memory.")
+            : profile.MemoryToken is null ? L("点侧栏的“连接账号记忆”，在官网确认一次即可。","Choose Connect account memory in the sidebar and confirm once on the website.")
             : L("与此账号的网页版共享记忆。对话、文件和设备读数保存在本机。","Memory is shared with this account on the web. Chats, files and device readings stay on this PC.")));
         var toggle = new Button();
         if (profile?.MemoryToken is not null) body.Children.Add(toggle);

@@ -43,6 +43,10 @@
                         </ListView.ItemTemplate>
                     </ListView>
                     <StackPanel Grid.Row="5" Spacing="4">
+                        <Button x:Name="MemoryReconnect" Visibility="Collapsed" Click="ReconnectMemoryClicked" Style="{StaticResource SubtleButtonStyle}"
+                                HorizontalAlignment="Stretch" HorizontalContentAlignment="Left" AutomationProperties.AutomationId="ReconnectMemory" />
+                        <Button x:Name="OfflineSetup" Click="InstallQwenClicked" Style="{StaticResource SubtleButtonStyle}"
+                                HorizontalAlignment="Stretch" HorizontalContentAlignment="Left" AutomationProperties.AutomationId="InstallOfflineQwen" />
                         <Button x:Name="SettingsButton" Style="{StaticResource SubtleButtonStyle}" Click="SettingsClicked" HorizontalAlignment="Stretch" HorizontalContentAlignment="Left"
                                 AutomationProperties.AutomationId="Settings">
                             <StackPanel Orientation="Horizontal" Spacing="10"><SymbolIcon Symbol="Setting" /><TextBlock x:Name="Settings" Text="Settings" /></StackPanel>

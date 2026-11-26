@@ -22,6 +22,8 @@ FILES = (ASSET, CHECKSUM, MANIFEST)
 SOURCE = "StarHub-Windows-Source.zip"
 SOURCE_CHECKSUM = SOURCE + ".sha256"
 PREVIEW_PATH = "windows/preview"
+QWEN_FILE = "qwen2.5-0.5b-instruct-q4_k_m.gguf"
+QWEN_SHA = "74a4da8c9fdbcd15bd1f6d01d621410d31c6fc00986f5eb687824e7b93d7a9db"
 
 
 def digest(file):
@@ -81,6 +83,55 @@ def create_directory(path, group):
         os.chown(path, 0, group)
     if not path.is_dir():
         raise SystemExit(f"Expected a directory: {path}")
+
+
+def attach_qwen(downloads, archive, source, assets, group):
+    # Keep the immutable weights across webapp replacements and reuse the same inode.
+    cache = archive / "models"
+    create_directory(cache, group)
+    cached = cache / QWEN_SHA
+    if cached.is_symlink():
+        raise SystemExit("Invalid model cache path.")
+    if not cached.exists():
+        if source is None:
+            return
+        with tempfile.NamedTemporaryFile(dir=cache) as staged:
+            with source.open("rb") as model:
+                shutil.copyfileobj(model, staged, 1024 * 1024)
+            staged.flush()
+            if staged.tell() != 491400032 or digest(Path(staged.name)) != QWEN_SHA:
+                raise SystemExit("The Qwen model did not match the pinned upstream weights.")
+            os.fchmod(staged.fileno(), 0o640)
+            os.fchown(staged.fileno(), 0, group)
+            os.fsync(staged.fileno())
+            os.link(staged.name, cached)
+    elif digest(cached) != QWEN_SHA:
+        raise SystemExit("The cached Qwen model differs from its pinned digest.")
+    public = downloads / "models"
+    create_directory(public, group)
+    create_directory(public / QWEN_SHA, group)
+    target = public / QWEN_SHA / QWEN_FILE
+    if target.is_symlink() or (target.exists() and not target.samefile(cached)):
+        raise SystemExit("Unexpected public model file.")
+    if not target.exists():
+        os.link(cached, target)
+
+    # Direct downloads receive the same upstream license as the installed app.
+    license_file = cache / "qwen2.5-LICENSE.txt"
+    license_sha = "832dd9e00a68dd83b3c3fb9f5588dad7dcf337a0db50f7d9483f310cd292e92e"
+    if not license_file.exists():
+        with zipfile.ZipFile(assets / SOURCE) as bundle:
+            license_text = bundle.read("desktop/Assets/OfflineQwen/qwen-license.txt")
+        if hashlib.sha256(license_text).hexdigest() != license_sha:
+            raise SystemExit("Unexpected Qwen license in the Windows source bundle.")
+        atomic_write(license_file, license_text, group)
+    if license_file.is_symlink() or digest(license_file) != license_sha:
+        raise SystemExit("Invalid Qwen license in the archive.")
+    public_license = target.with_name("LICENSE.txt")
+    if public_license.is_symlink() or (public_license.exists() and not public_license.samefile(license_file)):
+        raise SystemExit("Unexpected public Qwen license.")
+    if not public_license.exists():
+        os.link(license_file, public_license)
 
 
 def atomic_write(target, data, group):
@@ -198,6 +249,8 @@ def publish_locked(args, group):
     elif metadata(archived) != release:
         raise SystemExit("An archive for this version already contains different files.")
 
+    if args.qwen_model or (args.archive / "models" / QWEN_SHA).exists():
+        attach_qwen(downloads, args.archive, args.qwen_model, args.assets, group)
     attach_preview(downloads, archived, release, group, args.expect_preview_sha256)
     for target, content in page_assets.items():
         atomic_write(target, content, group)
@@ -217,6 +270,7 @@ if __name__ == "__main__":
     parser.add_argument("--webapp", type=Path, default=Path("/var/lib/codex-validation/tomcat-atomic/webapps/starhub"))
     parser.add_argument("--archive", type=Path, default=Path("/var/lib/codex-validation/starhub-windows-releases"))
     parser.add_argument("--page", type=Path)
+    parser.add_argument("--qwen-model", type=Path, help="Mirror the pinned optional offline model beside the Windows download")
     parser.add_argument("--expect-page-sha256")
     parser.add_argument("--expect-preview-sha256", help="Current installer digest when changing the preview")
     parser.add_argument("--source-tree", type=Path, help="Package a Windows source ZIP from the verified build's commit")

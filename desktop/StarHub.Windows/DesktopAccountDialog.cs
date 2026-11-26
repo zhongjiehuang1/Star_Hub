@@ -58,7 +58,7 @@ public sealed partial class MainWindow
         }
     }
 
-    private async Task ConnectDesktopAccountAsync()
+    private async Task ConnectDesktopAccountAsync(DesktopAccountProfile? expected = null)
     {
         using var cancellation = new CancellationTokenSource();
         var dialog = Dialog(T("Sign in to Star Hub"), Label(T("Finish connecting in your browser. Conversations and files stay on this PC.")));
@@ -73,6 +73,8 @@ public sealed partial class MainWindow
             if (await Task.WhenAny(connect, shown) == shown) cancellation.Cancel();
             var profile = await connect;
             cancellation.Token.ThrowIfCancellationRequested();
+            if (expected is not null && (!expected.MatchesConnection(profile) || !profile.CanRestoreMemory))
+                throw new StarHubException(WorkText("请在官网确认当前桌面账号，再连接记忆。", "Confirm the current desktop account on the website to connect its memory."));
             profile = profile.WithDesktopName(string.Equals(profile.Email, accountProfile?.Email, StringComparison.OrdinalIgnoreCase)
                 ? accountProfile?.DesktopDisplayName : null);
             desktopAccount.Save(profile);
@@ -91,7 +93,7 @@ public sealed partial class MainWindow
     {
         if (accountProfile?.CacheOwner != profile?.CacheOwner) NewConversation();
         accountProfile = profile;
-        if (profile?.MemoryToken is not null) _ = RefreshAccountMemoryAsync(profile);
+        ResumeMemoryConnection();
         using var diagnostic = DesktopDiagnostic.Start(profile, "desktop_connect");
         diagnostic?.Finish(TurnState.Completed);
         accountChoice = null;

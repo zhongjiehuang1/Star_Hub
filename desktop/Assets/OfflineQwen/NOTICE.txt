@@ -1,0 +1,7 @@
+Star Hub offline chat uses Qwen2.5-0.5B-Instruct from the Qwen team (Apache License 2.0).
+The unchanged Q4_K_M model is downloaded separately from the Windows installer.
+Upstream: https://huggingface.co/Qwen/Qwen2.5-0.5B-Instruct-GGUF/tree/9217f5db79a29953eb74d5343926648285ec7e67
+
+CPU inference uses llama.cpp b12753 (MIT). The runtime includes nlohmann/json (MIT)
+and LLVM OpenMP. Their license texts are provided in this directory.
+Upstream: https://github.com/ggml-org/llama.cpp/releases/tag/b12753

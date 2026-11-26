@@ -23,6 +23,7 @@
     <Content Include="starhub.ico" CopyToOutputDirectory="PreserveNewest" />
     <None Include="../Assets/NotoSansSC-Regular.ttf;../Assets/NotoSansSC-OFL.txt;../Assets/PDFsharp-LICENSE.txt"
           Link="Assets/%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
+    <None Include="../Assets/OfflineQwen/*" Link="offline-runtime/%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
     <ProjectReference Include="../StarHub.Platform/StarHub.Platform.csproj" />
     <PackageReference Include="NAudio.WinMM" Version="3.3.0" />
     <PackageReference Include="Markdig" Version="1.6.0" />

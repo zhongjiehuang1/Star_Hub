@@ -29,7 +29,8 @@ try
     var store = new LocalStore(WindowsHost.DataPath);
     using var client = new ProviderClient();
     var account = new DesktopAccountStore();
-    var engine = new ChatEngine(store, account, client);
+    using var qwen = new WindowsQwen(Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..")));
+    var engine = new ChatEngine(store, account, client, account.ReadProfile, qwen);
     store.MarkInterruptedTasks();
     WindowsHost.Log("worker.log", "Started.");
     var active = new List<Task>();

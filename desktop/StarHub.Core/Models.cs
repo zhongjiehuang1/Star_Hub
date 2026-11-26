@@ -3,7 +3,7 @@ using System.Text.Json;
 
 namespace StarHub.Core;
 
-public enum Provider { Automatic, OpenAI, Ollama, Compatible }
+public enum Provider { Automatic, OpenAI, Ollama, Compatible, LocalQwen }
 
 public sealed record Preferences
 {

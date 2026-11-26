@@ -33,6 +33,7 @@ public sealed partial class MainWindow
             if (!models.Any(model => model.Id == cloudModel))
                 yield return new(Provider.OpenAI, cloudModel, ModelName(cloudModel));
         }
+        if (localQwen.IsInstalled) yield return new(Provider.LocalQwen, QwenDownload.Model, WorkText("本地千问", "Offline Qwen"));
         if (!string.IsNullOrWhiteSpace(settings.OllamaModel))
             yield return new(Provider.Ollama, settings.OllamaModel, settings.OllamaModel + " · " + T("On this PC"));
         if (!string.IsNullOrWhiteSpace(settings.CompatibleModel) && !string.IsNullOrWhiteSpace(settings.CompatibleEndpoint))

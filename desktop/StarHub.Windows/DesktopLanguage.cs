@@ -19,6 +19,8 @@ public sealed partial class MainWindow
         LocalMemory.Text = WorkText("长期记忆","Long-term memory");
         ScheduledTasks.Text = T("Scheduled tasks");
         Settings.Text = T("Settings");
+        UpdateOfflineSetup();
+        MemoryReconnect.Content = WorkText("连接账号记忆", "Connect account memory");
         UpdateAccountLabel();
         AutomationProperties.SetName(ToggleConversationSidebar, T("Toggle conversation sidebar"));
         ToolTipService.SetToolTip(ToggleConversationSidebar, T("Conversations"));

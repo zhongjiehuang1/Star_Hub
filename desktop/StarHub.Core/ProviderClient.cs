@@ -36,7 +36,7 @@ public sealed partial class ProviderClient : IDisposable
         {
             Provider.OpenAI => ("responses", BuildResponses(chat)),
             Provider.Ollama => ("api/chat", BuildOllama(chat)),
-            Provider.Compatible => ("chat/completions", BuildCompatible(chat)),
+            Provider.Compatible or Provider.LocalQwen => ("chat/completions", BuildCompatible(chat)),
             _ => throw new StarHubException("No execution provider was selected.")
         };
 
