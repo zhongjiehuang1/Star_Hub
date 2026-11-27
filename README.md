@@ -1,6 +1,6 @@
 # Star Hub
 
-> **Current deployment.** Both application hosts share the single production MySQL instance on Server 2. Each entrance serves its local application, with no automatic application or database failover. See local OneDrive `Linux_Server_2026-11-24/SERVER_CURRENT_STATE.md` for current server state and `Linux_Server_2026-11-24/Recovery_Tools/README.md` for recovery operations.
+> **Current deployment.** Both application hosts share the single production MySQL instance on Server 2. Each entrance serves its local application, with no automatic application or database failover. See local OneDrive `Linux_Server_*/SERVER_CURRENT_STATE.md` for current server state and `Linux_Server_*/Recovery_Tools/README.md` for recovery operations.
 
 Star Hub's first preview combines a bilingual web workspace with a native desktop app for Windows 10 version 22H2 and Windows 11. The web workspace uses Java, plain HTML/CSS/JavaScript, and Tomcat 11.
 
@@ -63,7 +63,7 @@ Files and their bytes, metadata, trash, quota reservations and operation state a
 
 Each account has a 2,000,000,000-byte library quota including trash and pending reservations. The disk safety floor is 4,000,000,000 bytes, with physical availability checked by the capacity admission mechanism; privileged system activity may cross a filesystem reservation. Uploads can be rejected before the account quota if disk capacity is insufficient. Two simultaneously near-full quotas have not been validated by a full physical fill test.
 
-See [storage and recovery](docs/distributed-storage.md) for the current data and operation contract. Use `Linux_Server_2026-11-24/SERVER_CURRENT_STATE.md` and `Linux_Server_2026-11-24/Recovery_Tools/README.md` in local OneDrive. Preserve protected database configuration, vault keys, TLS, identity/session state and a verified recovery copy; do not place credentials in the source or deployment archive.
+See [storage and recovery](docs/distributed-storage.md) for the current data and operation contract. Use `Linux_Server_*/SERVER_CURRENT_STATE.md` and `Linux_Server_*/Recovery_Tools/README.md` in local OneDrive. Preserve protected database configuration, vault keys, TLS, identity/session state and a verified recovery copy; do not place credentials in the source or deployment archive.
 
 ### Regional tester access
 

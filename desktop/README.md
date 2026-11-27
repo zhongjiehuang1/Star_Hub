@@ -21,7 +21,7 @@ Star Hub Desktop runs in a native WinUI 3 window on Windows 10 version 22H2 (bui
 
 OpenAI web search returns linked sources. Hosted data analysis uses OpenAI's Code Interpreter tool. The desktop streams directly from OpenAI, Ollama at loopback, or the configured compatible API. In Settings, the OpenAI list includes GPT-6.1 Terra and GPT-6 Luna alongside GPT-6.2 Sol and Astra. Turn on **Search the web** next to the attachment button for a current question.
 
-Open **Settings → Language / 界面语言** to switch between English, Simplified Chinese and the Windows language. To update, finish active work, close Star Hub and run the newer setup from the download page. Setup replaces the installed app and preserves its local data. The Device panel shows five-minute trends for CPU, memory, disk activity and GPU usage when available.
+Open **Settings → Language / 界面语言** to switch between English, Simplified Chinese and the Windows language. To update, finish active work, close Star Hub and run the newer setup from the download page. Setup replaces the installed app and preserves its local data.
 
 **Operate this PC** starts enabled and remembers your choice. Enter a request such as `打开终端` or `读取 "C:\Users\YourName\Documents\账单.txt"`. Include a destination to copy a file or save a PDF. Use a full local path or a folder name such as Desktop, Documents or Downloads. Star Hub runs supported local actions with your Windows account. Switch off **Operate this PC** to return to ordinary chat.
 
